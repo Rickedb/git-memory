@@ -1,0 +1,5 @@
+{
+  "files.exclude": { "**/.git-memory": false },
+  "search.exclude": { "bin": true, "release": true },
+  "files.watcherExclude": { "bin/**": true, "release/**": true }
+}
