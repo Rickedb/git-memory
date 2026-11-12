@@ -8,15 +8,7 @@ import (
 	"time"
 )
 
-// Every machine derives the same root commit (empty tree, fixed identity and date), so independently initialised
-// clones share history and can sync.
-var rootEnv = map[string]string{
-	"GIT_AUTHOR_NAME": "git-memory", "GIT_AUTHOR_EMAIL": "git-memory@localhost",
-	"GIT_COMMITTER_NAME": "git-memory", "GIT_COMMITTER_EMAIL": "git-memory@localhost",
-	"GIT_AUTHOR_DATE": "2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2000-01-01T00:00:00Z",
-}
-
-// locate finds where the project's repo and local state live.
+// locate finds the repository containing cwd and where its local state lives.
 func locate(cwd string) BaseLoc {
 	root := filepath.FromSlash(git(cwd, "rev-parse", "--show-toplevel"))
 	common := resolvePath(root, filepath.FromSlash(git(root, "rev-parse", "--git-common-dir")))
@@ -24,6 +16,7 @@ func locate(cwd string) BaseLoc {
 	return BaseLoc{Root: root, Common: common, Data: data, Spool: filepath.Join(data, "spool")}
 }
 
+// projectName is the project's identity in the memory repository: the origin remote's name, else the directory name.
 func projectName(loc BaseLoc) string {
 	var base string
 	if url, ok := gitTry(loc.Root, "remote", "get-url", "origin"); ok && url != "" {
@@ -38,39 +31,13 @@ func projectName(loc BaseLoc) string {
 	return slugify(base, 60)
 }
 
-// attach resolves the configured store: where the checkout is and where this project's pages live.
-func attach(loc BaseLoc, cfg Config) *Loc {
-	s := cfg.Store
-	repo := resolvePath(loc.Root, expandHome(s.Path))
-	// `slug` identifies the project for the personal scope and must not change when the shared store picks a custom
-	// folder name (`store.project`), or personal memories would be orphaned. It comes from the repo itself.
-	slug := projectName(loc)
-	l := &Loc{BaseLoc: loc, Repo: repo, Wt: repo, Slug: slug, Scope: "project", Mode: modeBranch}
-	if s.Repo != nil && *s.Repo != "" {
-		name := slug
-		if s.Project != nil && *s.Project != "" {
-			name = *s.Project
-		}
-		l.Project = slugify(name, 60)
-		l.Wt = filepath.Join(repo, "projects", l.Project)
-		l.External = true
-		l.Mode = modeClone
-		l.RepoURL = *s.Repo
-	}
-	if rel, err := relPath(loc.Root, repo); err == nil && rel != "" && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
-		l.IgnoreRel = slash(rel)
-	}
-	return l
-}
-
-// openProject loads config and resolves the store for the repo containing cwd.
-func openProject(cwd string) (*Loc, Config) {
+// openProject resolves the project containing cwd and the memory repository it writes to.
+func openProject(cwd string) *Project {
 	base := locate(cwd)
-	cfg := loadConfig(base)
-	return attach(base, cfg), cfg
+	return &Project{BaseLoc: base, Slug: projectName(base), Mem: memoryDir()}
 }
 
-// excludeLocally uses .git/info/exclude: it keeps files out of `git status` without touching .gitignore.
+// excludeLocally adds an entry to .git/info/exclude: it keeps files out of `git status` without touching .gitignore.
 func excludeLocally(loc BaseLoc, entry string) {
 	file := filepath.Join(loc.Common, "info", "exclude")
 	old, _ := readFileTry(file)
@@ -97,81 +64,33 @@ func identityEnv(cwd string) map[string]string {
 	}
 }
 
-func refExists(cwd, ref string) bool {
-	_, ok := gitTry(cwd, "rev-parse", "--verify", "--quiet", ref)
-	return ok
+func isMemoryRepo(mem string) bool { return exists(filepath.Join(mem, ".git")) }
+
+// dirIsEmpty is true for a folder that does not exist or has nothing in it.
+func dirIsEmpty(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	return err != nil || len(entries) == 0
 }
 
-// ensureStore makes sure the memory checkout exists: a clone of the dedicated repo, or an orphan-branch worktree.
-func ensureStore(loc *Loc, cfg Config) {
-	if loc.IgnoreRel != "" {
-		excludeLocally(loc.BaseLoc, "/"+loc.IgnoreRel+"/")
-	}
-	switch loc.Mode {
-	case modeClone:
-		ensureClone(loc)
-		return
-	case modeLocal:
-		ensureLocal(loc)
+// ensureMemoryRepo creates the memory repository on first use. It only ever initialises a folder that is missing or
+// empty: anything else is somebody's data, and `git-memory init` (or a clone) is the explicit way to use it.
+func ensureMemoryRepo(mem string) {
+	if isMemoryRepo(mem) {
 		return
 	}
-	if exists(filepath.Join(loc.Repo, ".git")) {
-		return
+	if !dirIsEmpty(mem) {
+		fail("%s exists, is not empty and is not a git repository: move it aside, or run `git-memory init` to use it as the memory repository", mem)
 	}
-	mkdirAll(filepath.Dir(loc.Repo))
-	root, br := loc.Root, cfg.Branch
-	git(root, "worktree", "prune")
-	if !refExists(root, "refs/heads/"+br) {
-		if refExists(root, "refs/remotes/"+cfg.Remote+"/"+br) {
-			git(root, "branch", "--track", br, cfg.Remote+"/"+br)
-		} else {
-			empty := ""
-			tree := gitX(gitCmd{Cwd: root, Input: &empty}, "mktree")
-			commit := gitX(gitCmd{Cwd: root, Env: rootEnv}, "commit-tree", tree, "-m", "git-memory: init")
-			git(root, "branch", br, commit)
-		}
-	}
-	if entries, err := os.ReadDir(loc.Repo); err == nil {
-		if len(entries) > 0 {
-			fail("%s exists, is not empty and is not a git-memory checkout", loc.Repo)
-		}
-		os.RemoveAll(loc.Repo)
-	}
-	git(root, "worktree", "add", "--force", loc.Repo, br)
+	mkdirAll(mem)
+	git(mem, "init", "-q", "-b", "main")
 }
 
-// ensureLocal creates a plain local git repo with no remote: the zero-configuration personal store.
-func ensureLocal(loc *Loc) {
-	if !exists(filepath.Join(loc.Repo, ".git")) {
-		mkdirAll(loc.Repo)
-		git(loc.Repo, "init", "-q", "-b", "main")
+// withLock serializes writers of the memory repository with a lock directory (mkdir is atomic, also on Windows).
+func withLock(mem string, fn func()) {
+	if !isMemoryRepo(mem) {
+		fail("%s is not a git repository", mem)
 	}
-	mkdirAll(loc.Wt)
-}
-
-func ensureClone(loc *Loc) {
-	repo := loc.RepoURL
-	if repo == "" {
-		fail("no repository configured for the %s scope", loc.Scope)
-	}
-	if !exists(filepath.Join(loc.Repo, ".git")) {
-		mkdirAll(filepath.Dir(loc.Repo))
-		source := repo
-		if strings.HasPrefix(repo, "~/") || strings.HasPrefix(repo, "./") || strings.HasPrefix(repo, "../") {
-			source = resolvePath(loc.Root, expandHome(repo))
-		}
-		git(loc.Root, "clone", "--quiet", source, loc.Repo)
-	}
-	mkdirAll(loc.Wt)
-}
-
-// withLock serializes writers of one store with a lock directory (mkdir is atomic, also on Windows).
-func withLock(loc *Loc, fn func()) {
-	lock := loc.LockPath
-	if lock == "" {
-		lock = filepath.Join(loc.Data, "lock")
-	}
-	mkdirAll(filepath.Dir(lock))
+	lock := filepath.Join(mem, ".git", "git-memory.lock")
 	deadline := time.Now().Add(8 * time.Second)
 	for {
 		err := os.Mkdir(lock, 0o755)
@@ -185,7 +104,7 @@ func withLock(loc *Loc, fn func()) {
 			os.RemoveAll(lock)
 		}
 		if time.Now().After(deadline) {
-			fail("git-memory: could not acquire store lock")
+			fail("could not acquire the memory repository lock")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -193,27 +112,21 @@ func withLock(loc *Loc, fn func()) {
 	fn()
 }
 
-func pathspec(loc *Loc) string {
-	rel, err := filepath.Rel(loc.Repo, loc.Wt)
-	if err != nil || rel == "" {
-		return "."
-	}
-	return slash(rel)
-}
-
-// commitAll commits changes under this project's pages (other projects' folders in a shared repo are left alone).
-func commitAll(loc *Loc, message string) bool {
-	git(loc.Repo, "add", "-A", "--", pathspec(loc))
-	if git(loc.Repo, "status", "--porcelain", "--", pathspec(loc)) == "" {
+// commitPaths commits what changed under the given paths and nothing else: whatever else is staged in the repository
+// (the user may be in the middle of their own work there) stays staged.
+func commitPaths(mem, message string, paths ...string) bool {
+	spec := append([]string{"--"}, paths...)
+	git(mem, append([]string{"add", "-A"}, spec...)...)
+	if git(mem, append([]string{"status", "--porcelain"}, spec...)...) == "" {
 		return false
 	}
-	gitX(gitCmd{Cwd: loc.Repo, Env: identityEnv(loc.Repo)}, "-c", "commit.gpgsign=false", "commit", "--quiet", "--no-verify", "-m", message)
+	gitX(gitCmd{Cwd: mem, Env: identityEnv(mem)}, append([]string{"-c", "commit.gpgsign=false", "commit", "--quiet", "--no-verify", "-m", message}, spec...)...)
 	return true
 }
 
-// lastCommitAgeSec is how long ago this store's pages were last committed (a huge number when never).
-func lastCommitAgeSec(loc *Loc) int64 {
-	ts, ok := gitTry(loc.Repo, "log", "-1", "--format=%ct", "--", pathspec(loc))
+// lastCommitAgeSec is how long ago path was last committed (a huge number when never).
+func lastCommitAgeSec(mem, path string) int64 {
+	ts, ok := gitTry(mem, "log", "-1", "--format=%ct", "--", path)
 	if !ok || ts == "" {
 		return 1 << 40
 	}
@@ -222,48 +135,4 @@ func lastCommitAgeSec(loc *Loc) int64 {
 		return 1 << 40
 	}
 	return time.Now().Unix() - n
-}
-
-func hasRemote(loc *Loc, cfg Config) bool {
-	_, ok := gitTry(loc.Repo, "remote", "get-url", cfg.Remote)
-	return ok
-}
-
-type syncResult struct {
-	OK      bool
-	Pulled  bool
-	Message string
-}
-
-// syncStore rebases local memory commits on the remote branch, then pushes.
-func syncStore(loc *Loc, cfg Config) syncResult {
-	ensureStore(loc, cfg)
-	if !hasRemote(loc, cfg) {
-		return syncResult{Message: `no remote named "` + cfg.Remote + `"`}
-	}
-	cwd := loc.Repo
-	branch, ok := gitTry(cwd, "symbolic-ref", "--short", "HEAD")
-	if !ok {
-		branch = cfg.Branch
-	}
-	remoteRef := "refs/remotes/" + cfg.Remote + "/" + branch
-	_, fetched := gitTry(cwd, "fetch", "--quiet", cfg.Remote, branch+":"+remoteRef)
-	pulled := false
-	if fetched && refExists(cwd, remoteRef) {
-		before, hasHead := gitTry(cwd, "rev-parse", "HEAD")
-		if !hasHead {
-			git(cwd, "reset", "--hard", "--quiet", remoteRef) // fresh clone of an empty repo that has since received commits
-		} else if _, ok := gitXTry(gitCmd{Cwd: cwd, Env: identityEnv(cwd)}, "-c", "commit.gpgsign=false", "rebase", remoteRef); !ok {
-			gitTry(cwd, "rebase", "--abort")
-			return syncResult{Message: "rebase onto remote failed (conflict); resolve in " + cwd}
-		}
-		pulled = git(cwd, "rev-parse", "HEAD") != before
-	}
-	if !refExists(cwd, "HEAD") {
-		return syncResult{OK: true, Pulled: pulled, Message: "nothing to sync yet"}
-	}
-	if _, ok := gitTry(cwd, "push", "--quiet", cfg.Remote, branch+":"+branch); !ok {
-		return syncResult{Pulled: pulled, Message: "push failed (check remote permissions)"}
-	}
-	return syncResult{OK: true, Pulled: pulled, Message: "synced"}
 }

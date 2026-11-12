@@ -1,7 +1,6 @@
 package gm
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -159,44 +158,12 @@ func compileSession(events []Event, agent, sid string) compiledSession {
 	return compiledSession{Rel: rel, Meta: meta, Body: text, Text: serializePage(meta, text)}
 }
 
-// summarize runs the optional summarizer command (an LLM or anything else). It is never required and never fatal.
-func summarize(pageText string, cfg Config) string {
-	if cfg.Summarizer == nil || *cfg.Summarizer == "" {
-		return ""
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.SummarizerTimeoutSec)*time.Second)
-	defer cancel()
-	out, err := shellOutput(ctx, *cfg.Summarizer, pageText)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(out)
-}
-
-// spliceFirstSection inserts block before the first "\n## " of body.
-func spliceFirstSection(body, block string) string {
-	return strings.Replace(body, "\n## ", block, 1)
-}
-
-// summarySection finds an existing `## Summary` section (up to the next `## ` heading), starting with its newline.
-func summarySection(text string) string {
-	const head = "\n## Summary\n"
-	i := strings.Index(text, head)
-	if i < 0 {
-		return ""
-	}
-	end := strings.Index(text[i+len(head):], "\n## ")
-	if end < 0 {
-		return ""
-	}
-	return text[i : i+len(head)+end]
-}
-
-func writeSessionPage(loc *Loc, cfg Config, file string, withSummary bool) *compiledSession {
+// writeSessionPage compiles one session's spool into its page under the project's sessions/ folder. A session where
+// nothing was asked (opened and closed, or a bare resume) is not worth a page or a commit.
+func writeSessionPage(p *Project, file string) *compiledSession {
 	base := strings.TrimSuffix(filepath.Base(file), ".jsonl")
 	agent, sid, _ := strings.Cut(base, "-")
 	events := readEvents(file)
-	// A session where nothing was asked (opened and closed, or a bare resume) is not worth a page or a commit.
 	asked := false
 	for _, e := range events {
 		if e.Ev == "prompt" {
@@ -211,32 +178,22 @@ func writeSessionPage(loc *Loc, cfg Config, file string, withSummary bool) *comp
 		return nil
 	}
 	page := compileSession(events, agent, sid)
-	text := page.Text
-	dest := filepath.Join(loc.Wt, filepath.FromSlash(page.Rel))
-	if withSummary {
-		if s := summarize(text, cfg); s != "" {
-			text = serializePage(page.Meta, spliceFirstSection(page.Body, "\n## Summary\n\n"+s+"\n\n## "))
-		}
-	} else if old, ok := readFileTry(dest); ok {
-		// Keep an LLM summary written by an earlier flush of the same session.
-		if m := summarySection(old); m != "" {
-			text = serializePage(page.Meta, spliceFirstSection(page.Body, m+"\n## "))
-		}
-	}
+	dest := filepath.Join(p.Dir(), filepath.FromSlash(page.Rel))
 	mkdirAll(filepath.Dir(dest))
-	writeFile(dest, text)
+	writeFile(dest, page.Text)
 	markCompiled(file)
 	return &page
 }
 
-// flushStale compiles every spool that changed since it was last compiled (except skip). It returns how many.
-func flushStale(loc *Loc, cfg Config, skip string) int {
+// flushStale compiles every spool of this project that changed since it was last compiled (except skip). It returns how
+// many pages were written.
+func flushStale(p *Project, skip string) int {
 	n := 0
-	for _, file := range listSpools(loc) {
+	for _, file := range listSpools(p.Spool) {
 		if file == skip || isCompiled(file) {
 			continue
 		}
-		if writeSessionPage(loc, cfg, file, true) != nil {
+		if writeSessionPage(p, file) != nil {
 			n++
 		}
 	}

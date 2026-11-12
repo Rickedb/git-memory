@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -60,15 +59,7 @@ func catchAll(fn func()) (err error) {
 	return nil
 }
 
-func errorMessage(err error) string { return err.Error() }
-
 // ---- files ------------------------------------------------------------------------------------------------------
-
-func readFile(p string) string {
-	b, err := os.ReadFile(p)
-	check(err)
-	return string(b)
-}
 
 func readFileTry(p string) (string, bool) {
 	b, err := os.ReadFile(p)
@@ -160,11 +151,6 @@ func gitX(c gitCmd, args ...string) string {
 	return out
 }
 
-func gitXTry(c gitCmd, args ...string) (string, bool) {
-	out, err := runGit(c, args...)
-	return out, err == nil
-}
-
 // ---- text -------------------------------------------------------------------------------------------------------
 
 var accents = func() map[rune]rune {
@@ -237,8 +223,6 @@ func truncate(s string, max int) string {
 	return s
 }
 
-func utcNow() time.Time { return time.Now().UTC() }
-
 func iso(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 
 func nowISO() string { return iso(time.Now()) }
@@ -268,18 +252,13 @@ func asObj(v any) obj {
 	return obj{}
 }
 
-func asStr(v any) (string, bool) {
-	s, ok := v.(string)
-	return s, ok
-}
-
 // ---- args -------------------------------------------------------------------------------------------------------
 
 // Flags holds --name values: a string, or true for a bare switch.
 type Flags map[string]any
 
-// S is the string value of a flag, "" when absent or a bare switch.
-func (f Flags) S(k string) string {
+// Str is the string value of a flag, "" when absent or a bare switch.
+func (f Flags) Str(k string) string {
 	s, _ := f[k].(string)
 	return s
 }
@@ -328,9 +307,31 @@ func parseArgs(argv []string) (Flags, []string) {
 	return flags, pos
 }
 
-func atoiOr(s string, def int) int {
-	if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
-		return n
+// ---- JSON files -------------------------------------------------------------------------------------------------
+
+// readJSON reads a JSON object; anything missing or malformed is an empty object.
+func readJSON(file string) obj {
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return obj{}
 	}
-	return def
+	var o obj
+	if json.Unmarshal(b, &o) != nil || o == nil {
+		return obj{}
+	}
+	return o
+}
+
+func writeJSON(file string, data any) {
+	mkdirAll(filepath.Dir(file))
+	writeFile(file, marshalJSON(data, true)+"\n")
+}
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }

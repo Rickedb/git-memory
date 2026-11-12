@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+type healthRow struct{ status, label, detail string } // status: ok | warn | error | info
+
 // hookCommands lists our hook commands in a Claude settings or Copilot hook file.
 func hookCommands(file string) []string {
 	var out []string
@@ -28,6 +30,19 @@ func hookCommands(file string) []string {
 	return out
 }
 
+// countCommands is how many generated slash commands are present.
+func countCommands(root string) (claude, copilot int) {
+	for _, def := range commands {
+		if isGenerated(filepath.Join(root, ".claude", "skills", def.Name, "SKILL.md")) {
+			claude++
+		}
+		if isGenerated(filepath.Join(root, ".github", "prompts", def.Name+".prompt.md")) {
+			copilot++
+		}
+	}
+	return
+}
+
 func ago(t time.Time) string {
 	m := int(time.Since(t).Minutes() + 0.5)
 	switch {
@@ -43,138 +58,213 @@ func ago(t time.Time) string {
 
 var execLine = regexp.MustCompile(`exec '([^']+)'`)
 
-// health checks that everything is wired up, and that an agent has actually talked to it. It backs `doctor`.
-func health(loc *Loc, cfg Config, scopes *Scopes) []HealthRow {
-	var out []HealthRow
-	add := func(status, label, detail string) { out = append(out, HealthRow{status, label, detail}) }
-	rel := func(p string) string {
-		if r, err := relPath(loc.Root, p); err == nil && r != "" {
-			return slash(r)
-		}
-		return p
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
 	}
+	return fmt.Sprintf("%d %s", n, many)
+}
 
-	projectOn := scopes == nil || scopes.ProjectEnabled
-	setup := exists(projectConfigPath(loc.Root))
+// checkMemory looks at the memory repository, wherever the command runs.
+func checkMemory(mem string, add func(status, label, detail string)) {
 	switch {
-	case setup:
-		add("ok", "Setup file", rel(projectConfigPath(loc.Root)))
-	case projectOn:
-		add("warn", "Setup file", "none (memories are personal)")
-	default:
-		add("info", "Setup file", "none (memories are personal)")
-	}
+	case isMemoryRepo(mem):
+		branch, ok := gitTry(mem, "symbolic-ref", "--short", "HEAD")
+		if !ok {
+			branch = "?"
+		}
+		state := "no commits yet"
+		if n, ok := gitTry(mem, "rev-list", "--count", "HEAD"); ok {
+			state = plural(atoi(n), "commit", "commits")
+		}
+		add("ok", "Memory repository", fmt.Sprintf("%s (branch %s, %s)", mem, branch, state))
 
-	if projectOn {
-		if exists(filepath.Join(loc.Repo, ".git")) {
-			add("ok", "Project store", rel(loc.Repo)+"/")
-			if hasRemote(loc, cfg) {
-				add("ok", "Sync remote", cfg.Remote)
-			} else {
-				add("warn", "Sync remote", "no remote: memory stays on this machine")
-			}
+		if remotes, _ := gitTry(mem, "remote"); remotes == "" {
+			add("info", "Remote", "none: memory stays on this machine (git-memory remote add origin <url> to back it up)")
 		} else {
-			add("error", "Project store", "missing: "+rel(loc.Repo))
+			name, _, _ := strings.Cut(remotes, "\n")
+			url, _ := gitTry(mem, "remote", "get-url", name)
+			add("ok", "Remote", name+" → "+url)
 		}
-	} else {
-		add("info", "Project scope", "not set up: share with a team via `init --store <repo>` or `init --branch`")
-	}
-
-	if scopes != nil {
-		for _, s := range scopes.All {
-			if s.Scope == "project" {
-				continue
-			}
-			where := "local only (no remote)"
-			if s.Mode != modeLocal {
-				where = s.RepoURL
-			}
-			label := "Scope: " + scopeLabel(s.Scope)
-			switch {
-			case exists(filepath.Join(s.Repo, ".git")):
-				add("ok", label, where)
-			case s.Mode == modeLocal:
-				add("info", label, "created on first use")
-			default:
-				add("warn", label, fmt.Sprintf("not cloned yet (%s): run Sync", where))
-			}
+		if st, _ := gitTry(mem, "status", "--porcelain"); st == "" {
+			add("ok", "Uncommitted changes", "none")
+		} else {
+			add("warn", "Uncommitted changes", plural(len(strings.Split(st, "\n")), "file", "files")+" (git-memory status; git-memory add / commit)")
 		}
-	}
-	claudeCmds, copilotCmds := countCommands(loc.Root)
-	total := len(commands)
-	switch {
-	case claudeCmds+copilotCmds == 0:
-		add("info", "Slash commands", "not installed (git-memory init)")
-	case claudeCmds == total || copilotCmds == total:
-		add("ok", "Slash commands", fmt.Sprintf("Claude Code %d/%d, Copilot %d/%d", claudeCmds, total, copilotCmds, total))
+	case dirIsEmpty(mem):
+		add("info", "Memory repository", mem+" (not created yet: it is created the first time it is needed)")
 	default:
-		add("warn", "Slash commands", fmt.Sprintf("Claude Code %d/%d, Copilot %d/%d", claudeCmds, total, copilotCmds, total))
+		add("error", "Memory repository", mem+" exists, is not empty and is not a git repository (git-memory init, or move it aside)")
 	}
-	a := cfg.AutoRemember
-	if a.Triggers {
-		add("ok", "Auto-remember", "prompt triggers on → "+a.Scope+" scope")
-	} else {
-		add("info", "Auto-remember", "off (git-memory auto on)")
-	}
-	if cfg.SessionScope == "personal" {
-		add("ok", "Session pages", "personal (private to you)")
-	} else {
-		add("ok", "Session pages", "project (shared with the store’s users)")
-	}
-	add("ok", "Default scope", cfg.DefaultScope+" (where remember writes)")
+}
 
-	launcher := filepath.Join(loc.Data, wrapperName())
-	if exists(launcher) {
-		add("ok", "Hook runtime", rel(launcher))
-	} else {
-		add("error", "Hook runtime", "missing: run Set Up")
-	}
+// checkProject looks at the project containing cwd and how it is wired to the memory repository.
+func checkProject(p *Project, add func(status, label, detail string)) {
+	rel := func(f string) string { r, _ := filepath.Rel(p.Root, f); return slash(r) }
 
-	claude := []string{}
+	pages := listProjectPages(p)
+	var own, sessions, global int
+	for _, pg := range pages {
+		switch {
+		case pg.Scope == "global":
+			global++
+		case pg.Kind == "session":
+			sessions++
+		default:
+			own++
+		}
+	}
+	add("ok", "Project folder", p.DirRel())
+	add("ok", "Pages", fmt.Sprintf("%s and %s in this project, %d global", plural(own, "memory", "memories"), plural(sessions, "session", "sessions"), global))
+
+	var claude []string
 	for _, f := range []string{".claude/settings.local.json", ".claude/settings.json"} {
-		claude = append(claude, hookCommands(filepath.Join(loc.Root, filepath.FromSlash(f)))...)
+		claude = append(claude, hookCommands(filepath.Join(p.Root, filepath.FromSlash(f)))...)
 	}
-	copilot := hookCommands(filepath.Join(loc.Root, ".github", "hooks", "git-memory.json"))
-	if len(claude) > 0 {
-		add("ok", "Claude Code hooks", fmt.Sprintf("%d events", len(claude)))
-	} else {
-		add("warn", "Claude Code hooks", "not installed")
+	copilot := hookCommands(filepath.Join(p.Root, ".github", "hooks", "git-memory.json"))
+	hookRow := func(label string, got, want int) {
+		switch {
+		case got == 0:
+			add("warn", label, "not installed (git-memory agent init)")
+		case got < want:
+			add("warn", label, fmt.Sprintf("%d of %d events (git-memory agent init refreshes them)", got, want))
+		default:
+			add("ok", label, fmt.Sprintf("%d events", got))
+		}
 	}
-	if len(copilot) > 0 {
-		add("ok", "Copilot hooks", fmt.Sprintf("%d events", len(copilot)))
-	} else {
-		add("warn", "Copilot hooks", "not installed")
+	hookRow("Claude Code hooks", len(claude), len(claudeEvents))
+	hookRow("Copilot hooks", len(copilot), len(copilotEvents))
+
+	cc, cp := countCommands(p.Root)
+	total := len(commands)
+	detail := fmt.Sprintf("Claude Code %d/%d, Copilot %d/%d", cc, total, cp, total)
+	switch {
+	case cc+cp == 0:
+		add("info", "Slash commands", "not installed (git-memory agent init)")
+	case cc == total || cp == total:
+		add("ok", "Slash commands", detail)
+	default:
+		add("warn", "Slash commands", detail)
 	}
 
-	// The binary hooks end up running lives in the launcher (a sh script on Unix). It can vanish when git-memory is
-	// uninstalled or moved.
-	if text, ok := readFileTry(launcher); ok {
-		if m := execLine.FindStringSubmatch(text); m != nil {
-			if exists(m[1]) {
-				add("ok", "Binary used by hooks", m[1])
-			} else {
-				add("error", "Binary used by hooks", fmt.Sprintf("not found: %s (re-run Set Up)", m[1]))
+	launcher := filepath.Join(p.Data, wrapperName())
+	if !exists(launcher) {
+		if len(claude)+len(copilot) > 0 { // hooks that call a launcher that is gone
+			add("error", "Hook launcher", "missing: run git-memory agent init")
+		} else {
+			add("info", "Hook launcher", "not installed (git-memory agent init)")
+		}
+	} else {
+		add("ok", "Hook launcher", rel(launcher))
+		// The binary the launcher runs can vanish when git-memory is uninstalled or moved.
+		if text, ok := readFileTry(launcher); ok {
+			if m := execLine.FindStringSubmatch(text); m != nil {
+				if exists(m[1]) {
+					add("ok", "Binary used by hooks", m[1])
+				} else {
+					add("error", "Binary used by hooks", fmt.Sprintf("not found: %s (re-run git-memory agent init)", m[1]))
+				}
 			}
 		}
 	}
 
 	var newest time.Time
-	for _, f := range listSpools(loc) {
+	for _, f := range listSpools(p.Spool) {
 		if st, err := os.Stat(f); err == nil && st.ModTime().After(newest) {
 			newest = st.ModTime()
 		}
 	}
 	if newest.IsZero() {
-		add("info", "Agent activity", "no hook events yet: start an agent session")
+		add("info", "Agent activity", "no hook events yet: start an agent session in this project")
 	} else {
 		add("ok", "Agent activity", "last hook event "+ago(newest))
 	}
 
-	if text, ok := readFileTry(filepath.Join(loc.Data, "errors.log")); ok && strings.TrimSpace(text) != "" {
+	if text, ok := readFileTry(filepath.Join(p.Data, "errors.log")); ok && strings.TrimSpace(text) != "" {
 		lines := strings.Split(strings.TrimSpace(text), "\n")
 		add("warn", "Hook errors", fmt.Sprintf("%d logged; latest: %s", len(lines), runeSlice(lines[len(lines)-1], 160)))
 	} else {
 		add("ok", "Hook errors", "none")
 	}
-	return out
+}
+
+// checkSources lists the memories the agents keep for themselves, where they are found. root is "" outside a project.
+func checkSources(root string, add func(status, label, detail string)) {
+	found := false
+	for _, s := range agentSources(root) {
+		if root == "" && s.Name != "copilot-user" {
+			continue // the others only exist per project
+		}
+		if s.Dir == "" {
+			add("info", s.Label, "none found")
+			continue
+		}
+		files := s.Files()
+		shown := files
+		if len(shown) > 5 {
+			shown = shown[:5]
+		}
+		list := strings.Join(shown, ", ")
+		if len(files) > len(shown) {
+			list += ", …"
+		}
+		if len(files) == 0 {
+			add("info", s.Label, s.Dir+" (empty)")
+			continue
+		}
+		found = true
+		add("ok", s.Label, fmt.Sprintf("%s (%s: %s)", s.Dir, plural(len(files), "memory", "memories"), list))
+	}
+	if found {
+		add("info", "Promote", "git-memory promote claude:<file> --to project|global copies one into the memory repository (copilot:<file>, copilot-user:<file> likewise)")
+	}
+}
+
+func atoi(s string) int {
+	n := 0
+	fmt.Sscanf(strings.TrimSpace(s), "%d", &n)
+	return n
+}
+
+// runDoctor prints the version and a health report. It exits 1 when something is broken, unless --report is given
+// (what the /memories slash command uses, so a warning can never abort the block it injects).
+func runDoctor(flags Flags) int {
+	var rows []healthRow
+	add := func(status, label, detail string) { rows = append(rows, healthRow{status, label, detail}) }
+
+	gv, _ := gitTry("", "--version")
+	if gv == "" {
+		gv = "git: not found on PATH"
+	}
+	out(fmt.Sprintf("git-memory %s · %s", displayVersion(), gv))
+	out()
+
+	mem := memoryDir()
+	checkMemory(mem, add)
+	add("ok", "Global folder", globalRel+" (memories that apply to every project)")
+
+	cwd, _ := os.Getwd()
+	var p *Project
+	if err := Catch(func() { p = openProject(cwd) }); err != nil {
+		add("info", "Project", "not inside a git project: run doctor from a project to check how it is wired")
+	} else {
+		checkProject(p, add)
+	}
+
+	root := ""
+	if p != nil {
+		root = p.Root
+	}
+	checkSources(root, add)
+
+	icons := map[string]string{"ok": "✓", "warn": "!", "error": "✗", "info": "·"}
+	bad := false
+	for _, r := range rows {
+		out(icons[r.status] + " " + r.label + ": " + r.detail)
+		bad = bad || r.status == "error"
+	}
+	if bad && !flags.Has("report") {
+		return 1
+	}
+	return 0
 }

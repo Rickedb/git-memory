@@ -1,7 +1,6 @@
 package gm
 
 import (
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -103,22 +102,6 @@ func TestSectionOf(t *testing.T) {
 	}
 }
 
-func TestSummarySectionSplice(t *testing.T) {
-	old := "# t\n\n- Agent\n\n## Summary\n\nkept bullet\n\n## Outcome\n\ndone\n"
-	m := summarySection(old)
-	if m != "\n## Summary\n\nkept bullet\n" {
-		t.Fatalf("section = %q", m)
-	}
-	body := "# t\n\n- Agent\n\n## Outcome\n\nnew\n"
-	got := spliceFirstSection(body, m+"\n## ")
-	if want := "# t\n\n- Agent\n\n## Summary\n\nkept bullet\n\n## Outcome\n\nnew\n"; got != want {
-		t.Errorf("spliced:\n%q\nwant\n%q", got, want)
-	}
-	if summarySection("# t\n\n## Outcome\n") != "" || summarySection("\n## Summary\n\nlast section only") != "" {
-		t.Error("a summary with no following heading is not a match (same as the original lookahead)")
-	}
-}
-
 func TestTokenize(t *testing.T) {
 	if got := tokenize("the parseConfig files"); !reflect.DeepEqual(got, []string{"parse", "config", "file"}) {
 		t.Errorf("got %v", got)
@@ -217,80 +200,6 @@ func TestTriggersIn(t *testing.T) {
 	}
 }
 
-func TestPortableAndIsLocalPath(t *testing.T) {
-	root := t.TempDir()
-	base := filepath.Join(root, "proj", "app")
-	if err := os.MkdirAll(base, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	old, _ := os.Getwd()
-	if err := os.Chdir(base); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chdir(old) })
-
-	for in, want := range map[string]string{
-		filepath.Join(root, "proj", "memory.git"): "../memory.git",
-		filepath.Join(base, "sub", "m.git"):       "./sub/m.git",
-		base:                                      ".",
-		"../x.git":                                "../x.git",
-	} {
-		if got := portable(in, base); got != want {
-			t.Errorf("portable(%q) = %q, want %q", in, got, want)
-		}
-	}
-	for _, url := range []string{"git@github.com:acme/mem.git", "https://example.com/a/b.git", "ssh://git@host/a.git", "file:///srv/m.git"} {
-		if got := portable(url, base); got != url {
-			t.Errorf("url %q rewritten to %q", url, got)
-		}
-		if isLocalPath(url) {
-			t.Errorf("%q is a URL", url)
-		}
-	}
-	for _, p := range []string{"./a", "../a", "/a", "~/a", `C:\a`, "C:/a"} {
-		if !isLocalPath(p) {
-			t.Errorf("%q is a path", p)
-		}
-	}
-}
-
-func TestLoadConfigResolvesRelativeReposAgainstTheirOwnFile(t *testing.T) {
-	root := t.TempDir()
-	home, proj := filepath.Join(root, "userhome"), filepath.Join(root, "work", "app")
-	data := filepath.Join(proj, ".git", "git-memory")
-	for _, d := range []string{home, proj, data} {
-		os.MkdirAll(d, 0o755)
-	}
-	t.Setenv("GIT_MEMORY_HOME", home)
-	write := func(p, s string) { os.WriteFile(p, []byte(s), 0o644) }
-	write(filepath.Join(home, "config.json"), `{"personal":{"repo":"../personal.git"},"autoRemember":{"maxPerPrompt":2}}`)
-	write(filepath.Join(proj, "git-memory.json"), `{"store":{"repo":"../team.git"},"scopes":{"pay":{"repo":"../pay.git"}},"defaultScope":"project"}`)
-	write(filepath.Join(data, "config.json"), `{"defaultScope":null,"briefing":{"maxChars":99}}`)
-
-	cfg := loadConfig(BaseLoc{Root: proj, Data: data})
-	if got := *cfg.Personal.Repo; got != filepath.Join(root, "personal.git") {
-		t.Errorf("personal.repo resolved against the user dir: %s", got)
-	}
-	if got := *cfg.Store.Repo; got != filepath.Join(root, "work", "team.git") {
-		t.Errorf("store.repo: %s", got)
-	}
-	if got := *cfg.Scopes["pay"].Repo; got != filepath.Join(root, "work", "pay.git") {
-		t.Errorf("scope repo: %s", got)
-	}
-	if cfg.DefaultScope != "project" {
-		t.Errorf("a null in a higher layer must not erase a lower one: %q", cfg.DefaultScope)
-	}
-	if cfg.Briefing.MaxChars != 99 || cfg.Briefing.RecentSessions != 3 {
-		t.Errorf("deep merge: %+v", cfg.Briefing)
-	}
-	if cfg.AutoRemember.MaxPerPrompt != 2 || !cfg.AutoRemember.Triggers || cfg.AutoRemember.Scope != "personal" {
-		t.Errorf("autoRemember: %+v", cfg.AutoRemember)
-	}
-	if cfg.Capture.MaxPromptChars != 1500 || len(cfg.Capture.Exclude) != 5 {
-		t.Errorf("defaults lost: %+v", cfg.Capture)
-	}
-}
-
 func TestSummarizeToolPayloads(t *testing.T) {
 	root := t.TempDir()
 	cfg := defaultConfig()
@@ -329,27 +238,29 @@ func TestMarshalJSONDoesNotEscapeHTML(t *testing.T) {
 }
 
 func TestSpoolDedupesDoubleFiredHooks(t *testing.T) {
-	loc := &Loc{BaseLoc: BaseLoc{Spool: t.TempDir()}}
+	dir := t.TempDir()
 	e := Event{Ev: "prompt", Text: "hello"}
-	if !appendEvent(loc, "claude", "s1", e) {
+	if !appendEvent(dir, "claude", "s1", e) {
 		t.Fatal("first event dropped")
 	}
-	if appendEvent(loc, "claude", "s1", e) {
+	if appendEvent(dir, "claude", "s1", e) {
 		t.Error("the same event within 2s must be dropped (Copilot also reads .claude/settings.json)")
 	}
-	if !appendEvent(loc, "claude", "s1", Event{Ev: "prompt", Text: "another"}) {
+	if !appendEvent(dir, "claude", "s1", Event{Ev: "prompt", Text: "another"}) {
 		t.Error("a different event is kept")
 	}
-	if n := len(readEvents(spoolFile(loc, "claude", "s1"))); n != 2 {
+	if n := len(readEvents(spoolFile(dir, "claude", "s1"))); n != 2 {
 		t.Errorf("%d events", n)
 	}
 }
 
 func TestIsOursMatchesOldAndNewHookCommands(t *testing.T) {
 	for _, c := range []string{
-		`"$CLAUDE_PROJECT_DIR/.git/git-memory/gm" hook claude Stop`,
+		`"$CLAUDE_PROJECT_DIR/.git/git-memory/gm" agent hook claude Stop`,
+		`./.git/git-memory/gm agent hook copilot agentStop`,
+		`./.git/git-memory/gm.exe agent hook copilot agentStop`,
+		`"$CLAUDE_PROJECT_DIR/.git/git-memory/gm" hook claude Stop`, // hook files of earlier builds, replaced on the next `agent init`
 		`./.git/git-memory/gm hook copilot agentStop`,
-		`./.git/git-memory/gm.exe hook copilot agentStop`,
 		`node "$CLAUDE_PROJECT_DIR/.git/git-memory/runtime/cli.js" hook claude Stop`,
 		`node ./.git/git-memory/runtime/cli.js hook copilot Stop`,
 		`node .claude/git-memory.mjs hook claude Stop`,
@@ -362,6 +273,17 @@ func TestIsOursMatchesOldAndNewHookCommands(t *testing.T) {
 	for _, c := range []string{`echo hook claude`, `./scripts/other.sh hook x`, `prettier --write`} {
 		if isOurs(c) {
 			t.Errorf("wrongly claimed: %s", c)
+		}
+	}
+}
+
+func TestDisplayVersionDropsTheTagPrefix(t *testing.T) {
+	old := Version
+	defer func() { Version = old }()
+	for in, want := range map[string]string{"0.0.1": "0.0.1", "v0.0.1": "0.0.1", "v1.2.3-rc1": "1.2.3-rc1"} {
+		Version = in
+		if got := displayVersion(); got != want {
+			t.Errorf("displayVersion() with Version=%q = %q, want %q", in, got, want)
 		}
 	}
 }

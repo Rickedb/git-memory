@@ -140,10 +140,20 @@ func pageTime(p *Page) int64 {
 	return 0
 }
 
-// refOf is the scope-qualified reference, e.g. `personal:memories/decision/use-pnpm.md`. Accepted by show/forget/move.
-func refOf(scope, path string) string { return scope + ":" + path }
+// pageRef is how a page is referred to: its path in the memory repository, e.g. projects/shop/memories/decision/use-pnpm.md.
+func pageRef(p *Page) string { return p.Repo }
 
-func pageRef(p *Page) string { return refOf(p.Scope, p.Path) }
+// listProjectPages reads the pages that apply to the project: its own folder and the global one.
+func listProjectPages(p *Project) []*Page {
+	var out []*Page
+	for _, d := range []struct{ dir, scope, rel string }{{p.Dir(), "project", p.DirRel()}, {p.GlobalDir(), "global", globalRel}} {
+		for _, pg := range listPages(d.dir, d.scope) {
+			pg.Repo = d.rel + "/" + pg.Path
+			out = append(out, pg)
+		}
+	}
+	return out
+}
 
 func isActive(p *Page) bool { return p.Status == "active" }
 

@@ -1,3 +1,3 @@
-module git-memory
+module github.com/Rickedb/git-memory
 
 go 1.22

@@ -39,30 +39,20 @@ func tokenize(text string) []string {
 var kindBoost = map[string]float64{"decision": 1.4, "procedure": 1.4, "fact": 1.2, "note": 1.0, "session": 0.8}
 
 type searchHit struct {
-	Scope  string `json:"scope"`
-	Status string `json:"status"`
-	// Ref is the scope-qualified reference accepted by show/forget/move.
-	Ref     string   `json:"ref"`
-	Path    string   `json:"path"`
-	Title   string   `json:"title"`
-	Kind    string   `json:"kind"`
-	Tier    string   `json:"tier"`
-	Tags    []string `json:"tags"`
-	Updated string   `json:"updated"`
-	Score   float64  `json:"score"`
+	// Ref is the page's path in the memory repository.
+	Ref   string
+	Title string
+	Kind  string
+	Scope string
+	Score float64
 	// Matched is how many distinct query terms matched, and Terms how many the query had.
-	Matched int    `json:"matched"`
-	Terms   int    `json:"terms"`
-	Snippet string `json:"snippet"`
+	Matched int
+	Terms   int
+	Snippet string
 }
 
 type searchOptions struct {
 	Limit int
-	Scope string
-	All   bool // include superseded pages (hidden by default: they no longer bind)
-	Kind  string
-	Tag   string
-	Since int64
 	Pages []*Page
 }
 
@@ -117,13 +107,7 @@ func search(query string, o searchOptions) []searchHit {
 	}
 	var docs []doc
 	for _, p := range o.Pages {
-		if (o.Scope != "" && p.Scope != o.Scope) || (!o.All && !isActive(p)) || (o.Kind != "" && p.Kind != o.Kind) {
-			continue
-		}
-		if o.Tag != "" && !contains(p.Tags, o.Tag) {
-			continue
-		}
-		if o.Since != 0 && pageTime(p) < o.Since {
+		if !isActive(p) { // superseded pages no longer bind
 			continue
 		}
 		tf := map[string]float64{}
@@ -187,13 +171,8 @@ func search(query string, o searchOptions) []searchHit {
 			boost = 1
 		}
 		score *= (1 + 0.3*math.Exp(-ageDays/30)) * boost
-		tags := d.page.Tags
-		if tags == nil {
-			tags = []string{}
-		}
 		results = append(results, searchHit{
-			Scope: d.page.Scope, Status: d.page.Status, Ref: pageRef(d.page), Path: d.page.Path, Title: d.page.Title,
-			Kind: d.page.Kind, Tier: d.page.Tier, Tags: tags, Updated: d.page.Meta.Updated(), Score: score,
+			Ref: pageRef(d.page), Title: d.page.Title, Kind: d.page.Kind, Scope: d.page.Scope, Score: score,
 			Matched: matched, Terms: len(terms), Snippet: snippet(d.page.Body, terms),
 		})
 	}
@@ -202,22 +181,4 @@ func search(query string, o searchOptions) []searchHit {
 		results = results[:limit]
 	}
 	return results
-}
-
-func contains(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
-}
-
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -252,40 +251,26 @@ func currentGit(root string) (branch, head string) {
 	return
 }
 
-// backgroundSync runs `sync --quiet` after the hook has returned.
-func backgroundSync(root string) {
-	exe, err := os.Executable()
-	if err != nil {
-		return
-	}
-	cmd := exec.Command(exe, "sync", "--quiet")
-	cmd.Dir = root
-	detach(cmd)
-	if cmd.Start() == nil {
-		_ = cmd.Process.Release()
-	}
-}
-
 // saveTriggers stores the memories a user asked for in their prompt ("remember that …"). A failure never reaches the agent.
-func saveTriggers(scopes *Scopes, cfg Config, source, prompt string) {
+func saveTriggers(p *Project, cfg Config, source, prompt string) (saved []string) {
 	if err := catchAll(func() {
 		found := triggersIn(prompt)
-		if len(found) > cfg.AutoRemember.MaxPerPrompt {
-			found = found[:cfg.AutoRemember.MaxPerPrompt]
+		if len(found) > cfg.MaxAutoPerPrompt {
+			found = found[:cfg.MaxAutoPerPrompt]
 		}
-		if len(found) == 0 {
-			return
-		}
-		store := getScope(scopes, cfg.AutoRemember.Scope)
 		for _, c := range found {
-			remember(store, cfg, rememberInput{Text: c.Text, Kind: c.Kind, Title: c.Title, Tags: []string{"auto", "prompt"}, Extra: [][2]string{{"source", source}}})
+			saved = append(saved, p.remember(rememberInput{Text: c.Text, Kind: c.Kind, Title: c.Title, Tags: []string{"auto", "prompt"}, Extra: [][2]string{{"source", source}}}))
 		}
 	}); err != nil {
-		logError(scopes.Project.Root, err)
+		logError(p.Root, err)
 	}
+	return saved
 }
 
 var unsafeSid = regexp.MustCompile(`[^\w.-]`)
+
+// launcherCLI is how the project's own files (briefing, slash commands) name the CLI: the launcher `agent init` writes.
+func launcherCLI() string { return "./.git/git-memory/" + wrapperName() }
 
 // handleHook is the single entry point for every agent/event pair. It returns the hook's stdout object, or nil.
 func handleHook(agent, rawEvent string, payload HookPayload) *hookOutput {
@@ -293,7 +278,7 @@ func handleHook(agent, rawEvent string, payload HookPayload) *hookOutput {
 		rawEvent = pickStr(payload, "hook_event_name", "hookEventName")
 	}
 	ev, ok := normalizeEvent(rawEvent)
-	if !ok || os.Getenv("GIT_MEMORY_DISABLE") != "" {
+	if !ok {
 		return nil
 	}
 
@@ -301,72 +286,61 @@ func handleHook(agent, rawEvent string, payload HookPayload) *hookOutput {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
-	loc, cfg, scopes := openAll(cwd)
-	// Session pages go to one scope's store: the project's (shared) or the user's private one.
-	sessionLoc, ok := scopes.ByID[cfg.SessionScope]
-	if !ok {
-		sessionLoc = getScope(scopes, "personal")
-	}
+	p := openProject(cwd)
+	cfg := defaultConfig()
 	sid := "unknown"
 	if v := pick(payload, "session_id", "sessionId"); v != nil {
 		sid = unsafeSid.ReplaceAllString(toString(v), "_")
 	}
-	file := spoolFile(loc, agent, sid)
+	file := spoolFile(p.Spool, agent, sid)
 
 	switch ev {
 	case evStart:
-		branch, head := currentGit(loc.Root)
-		appendEvent(loc, agent, sid, Event{Ev: "start", Source: pickStr(payload, "source"), Branch: branch, Head: head})
+		branch, head := currentGit(p.Root)
+		appendEvent(p.Spool, agent, sid, Event{Ev: "start", Source: pickStr(payload, "source"), Branch: branch, Head: head})
 		if initial := stripHarnessContext(pickStr(payload, "initial_prompt", "initialPrompt")); initial != "" {
-			appendEvent(loc, agent, sid, Event{Ev: "prompt", Text: clean(initial, cfg.Capture.MaxPromptChars)})
+			appendEvent(p.Spool, agent, sid, Event{Ev: "prompt", Text: clean(initial, cfg.Capture.MaxPromptChars)})
 		}
-		// Only the project (if it has a shared store) and session stores are created here; other scopes are read if their
-		// checkout already exists (cloning an unrelated remote inside a hook could blow the hook timeout; `init` and
-		// `sync` do that).
-		if scopes.ProjectEnabled {
-			tryEnsure(loc, cfg)
-		}
-		if tryEnsure(sessionLoc, cfg) == "" {
-			withLock(sessionLoc, func() {
-				if flushStale(sessionLoc, cfg, file) > 0 {
-					commitAll(sessionLoc, "memory: finalize earlier sessions")
-				}
-			})
-		}
-		purgeOld(loc, 14)
-		return contextOutput(agent, ev, buildBriefing(listAllPages(scopes), cfg))
+		ensureMemoryRepo(p.Mem)
+		withLock(p.Mem, func() {
+			if flushStale(p, file) > 0 {
+				commitPaths(p.Mem, "memory: finalize earlier sessions", p.DirRel())
+			}
+		})
+		purgeOld(p.Spool, 14)
+		return contextOutput(agent, ev, buildBriefing(listProjectPages(p), cfg, p.DirRel(), launcherCLI()))
 
 	case evPrompt:
 		text := stripHarnessContext(pickStr(payload, "prompt"))
 		if text == "" {
 			return nil // the prompt was only editor context
 		}
-		appendEvent(loc, agent, sid, Event{Ev: "prompt", Text: clean(text, cfg.Capture.MaxPromptChars)})
-		if cfg.AutoRemember.Triggers {
-			saveTriggers(scopes, cfg, agent+":"+sid, text)
-		}
+		appendEvent(p.Spool, agent, sid, Event{Ev: "prompt", Text: clean(text, cfg.Capture.MaxPromptChars)})
+		saved := saveTriggers(p, cfg, agent+":"+sid, text)
 		if agent != "claude" {
 			return nil
 		}
-		return contextOutput(agent, ev, buildRecall(listAllPages(scopes), cfg, clean(text, 600)))
+		// what this very prompt just saved is not "related memory": the agent was only told to remember it
+		pages := filterPages(listProjectPages(p), func(pg *Page) bool { return !contains(saved, pg.Repo) })
+		return contextOutput(agent, ev, buildRecall(pages, cfg, clean(text, 600)))
 
 	case evTool, evToolFail:
-		if e := summarizeTool(payload, loc.Root, cfg); e != nil {
+		if e := summarizeTool(payload, p.Root, cfg); e != nil {
 			if ev == evToolFail {
 				e.Failed = true
 			}
-			appendEvent(loc, agent, sid, *e)
+			appendEvent(p.Spool, agent, sid, *e)
 		}
 		return nil
 
 	case evStop:
 		last := clean(lastAssistantText(payload), cfg.Capture.MaxOutcomeChars)
-		appendEvent(loc, agent, sid, Event{Ev: "stop", Last: last})
-		withLock(sessionLoc, func() {
-			ensureStore(sessionLoc, cfg)
-			writeSessionPage(sessionLoc, cfg, file, false)
-			if lastCommitAgeSec(sessionLoc) >= int64(cfg.DebounceCommitSec) {
-				commitAll(sessionLoc, "memory: session "+runeSlice(sid, 8)+" ("+agent+")")
+		appendEvent(p.Spool, agent, sid, Event{Ev: "stop", Last: last})
+		ensureMemoryRepo(p.Mem)
+		withLock(p.Mem, func() {
+			writeSessionPage(p, file)
+			if lastCommitAgeSec(p.Mem, p.DirRel()) >= int64(cfg.DebounceCommitSec) {
+				commitPaths(p.Mem, "memory: session "+runeSlice(sid, 8)+" ("+agent+")", p.DirRel())
 			}
 		})
 		return nil
@@ -376,15 +350,12 @@ func handleHook(agent, rawEvent string, payload HookPayload) *hookOutput {
 		if ev == evEnd {
 			name = "end"
 		}
-		appendEvent(loc, agent, sid, Event{Ev: name, Reason: pickStr(payload, "reason", "trigger")})
-		withLock(sessionLoc, func() {
-			ensureStore(sessionLoc, cfg)
-			writeSessionPage(sessionLoc, cfg, file, ev == evEnd)
-			commitAll(sessionLoc, "memory: session "+runeSlice(sid, 8)+" ("+agent+")")
+		appendEvent(p.Spool, agent, sid, Event{Ev: name, Reason: pickStr(payload, "reason", "trigger")})
+		ensureMemoryRepo(p.Mem)
+		withLock(p.Mem, func() {
+			writeSessionPage(p, file)
+			commitPaths(p.Mem, "memory: session "+runeSlice(sid, 8)+" ("+agent+")", p.DirRel())
 		})
-		if ev == evEnd && cfg.AutoPush {
-			backgroundSync(loc.Root)
-		}
 		return nil
 	}
 	return nil
@@ -398,7 +369,7 @@ func toString(v any) string {
 	return string(b)
 }
 
-// logError appends to .git/git-memory/errors.log; outside a repo there is nothing sensible to do.
+// logError appends to the project's .git/git-memory/errors.log; outside a repo there is nothing sensible to do.
 func logError(cwd string, err error) {
 	_ = catchAll(func() {
 		base := locate(cwd)

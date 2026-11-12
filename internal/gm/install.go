@@ -20,7 +20,7 @@ func wrapperName() string {
 
 // isOurs recognizes our own hook commands. It also matches the Node-era entry points (git-memory.mjs, cli.js), so
 // re-running init replaces them.
-var oursRe = regexp.MustCompile(`(?:git-memory\.mjs|[\\/]cli\.js|[\\/]gm(?:\.exe)?|\bgit-memory(?:\.exe)?)"? hook `)
+var oursRe = regexp.MustCompile(`(?:git-memory\.mjs|[\\/]cli\.js|[\\/]gm(?:\.exe)?|\bgit-memory(?:\.exe)?)"? (?:agent )?hook `)
 
 func isOurs(command any) bool {
 	s, ok := command.(string)
@@ -87,24 +87,17 @@ func installCopilot(file string, cmd hookCmd) {
 }
 
 type initResult struct {
-	Written []string
-	Loc     *Loc
-	Cfg     Config
-	Scopes  *Scopes
-	// Warnings are scopes whose store could not be created now (e.g. an unreachable remote); `sync` retries them.
-	Warnings []string
-	// Commands are the slash commands installed for Claude Code (skills) and Copilot (prompt files).
+	Written  []string
+	Mem      string
+	MemNote  string // why the memory repository could not be created now, if it could not
 	Commands commandsResult
-	// SetupIsNew is true when this run created git-memory.json (a shared project store was requested for the first time).
-	SetupIsNew bool
 }
 
 func shQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
-// installLauncher writes .git/git-memory/gm. On Unix it is a tiny sh script that execs the installed binary (so
-// upgrading the binary needs no re-init), and it bakes in GIT_MEMORY_HOME so an isolated home (a sandbox, a test) stays
-// isolated whatever environment an agent later launches the hooks with. Windows has no sh, so the executable itself is
-// copied there.
+// installLauncher writes .git/git-memory/gm. On Unix it is a tiny sh script that execs the installed binary, so upgrading
+// the binary needs no re-init and agents launched without your shell's PATH still find it. Windows has no sh, so the
+// executable itself is copied there.
 func installLauncher(dest string) {
 	exe, err := os.Executable()
 	check(err)
@@ -119,11 +112,7 @@ func installLauncher(dest string) {
 		copyExecutable(exe, dest)
 		return
 	}
-	home := ""
-	if h := os.Getenv("GIT_MEMORY_HOME"); h != "" {
-		home = "export GIT_MEMORY_HOME=" + shQuote(h) + "\n"
-	}
-	writeFile(dest, "#!/bin/sh\n"+home+"exec "+shQuote(exe)+" \"$@\"\n")
+	writeFile(dest, "#!/bin/sh\nexec "+shQuote(exe)+" \"$@\"\n")
 	check(os.Chmod(dest, 0o755))
 }
 
@@ -151,86 +140,37 @@ func copyExecutable(src, dest string) {
 	}
 }
 
-// initProject wires the project. Personal-only (plain `init`) adds nothing to the project's tracked files. Opting into a
-// shared project store (`--store <repo>` or `--branch`) adds one committed file, git-memory.json (the setup). Everything
-// else stays out of the project's tracked files:
+// agentInit wires the current project to the memory repository. It adds nothing to the project's tracked files:
 //
-//	.git-memory/              the shared project store's checkout (git-excluded)
-//	.git/git-memory/          launcher, spool and machine-local config
-//	.claude/settings.local.json, .github/hooks/git-memory.json   hook wiring (git-excluded)
+//	.git/git-memory/gm                                            the launcher (machine-specific, never committed)
+//	.claude/settings.local.json, .github/hooks/git-memory.json    hook wiring (git-excluded)
+//	.claude/skills/*, .github/prompts/*                           the slash commands (git-excluded)
 //
-// A teammate who clones the project runs `git-memory init` with no flags and gets the same setup.
-func initProject(base BaseLoc, flags Flags) initResult {
-	setupFile := projectConfigPath(base.Root)
-	setup := readJSON(setupFile)
-	wantsShared := flags.Has("store") || flags.Has("branch") || flags.Has("project") || flags.Has("path")
-	isNew := wantsShared && !exists(setupFile)
-	if wantsShared {
-		store := obj{"repo": nil}
-		for k, v := range asObj(setup["store"]) {
-			store[k] = v
-		}
-		setup["store"] = store
-		if s, ok := flags["store"].(string); ok {
-			store["repo"] = portable(s, base.Root)
-		} else if flags.Has("branch") {
-			store["repo"] = nil
-		}
-		if s, ok := flags["project"].(string); ok {
-			store["project"] = s
-		}
-		if s, ok := flags["path"].(string); ok {
-			if filepath.IsAbs(s) || strings.HasPrefix(s, "~") {
-				s = portable(s, base.Root)
-			}
-			store["path"] = s
-		}
-		writeJSON(setupFile, setup)
-	}
-
-	// Everything written into the project or a config file refers to the CLI by a path relative to the project root.
-	// The only file with machine-specific paths is the launcher itself, which lives under .git (never committed).
+// The memory repository itself (~/.git-memory) is created if it does not exist yet.
+func agentInit(base BaseLoc, flags Flags) initResult {
 	launcher := filepath.Join(base.Data, wrapperName())
 	rel := func(p string) string {
 		r, _ := filepath.Rel(base.Root, p)
 		return slash(r)
 	}
 	commandCli := "./" + rel(launcher)
-	local := readJSON(localConfigPath(base.Data))
-	local["cli"] = commandCli
-	writeJSON(localConfigPath(base.Data), local)
-
-	cfg := loadConfig(base)
-	scopes := resolveScopes(base, cfg)
-	loc := scopes.Project
-	if scopes.ProjectEnabled {
-		ensureStore(loc, cfg)
-	}
-	var warnings []string
-	for _, s := range scopes.All {
-		if s.Scope == "project" || s.Mode == modeLocal {
-			continue // the local personal store is created on first write
-		}
-		if msg := tryEnsure(s, cfg); msg != "" {
-			warnings = append(warnings, s.Scope+": "+msg)
-		}
-	}
 	installLauncher(launcher)
 
-	var written []string
-	if wantsShared {
-		written = append(written, rel(setupFile))
+	res := initResult{Mem: memoryDir()}
+	if err := Catch(func() { ensureMemoryRepo(res.Mem) }); err != nil {
+		res.MemNote = err.Error()
 	}
+
 	// Hooks call the launcher through $CLAUDE_PROJECT_DIR (Claude's documented way, robust to a changed working
 	// directory) or a project-relative path (Copilot runs hooks with cwd ".").
 	claudeCmd := func(agent, event string) string {
-		return `"$CLAUDE_PROJECT_DIR/` + rel(launcher) + `" hook ` + agent + " " + event
+		return `"$CLAUDE_PROJECT_DIR/` + rel(launcher) + `" agent hook ` + agent + " " + event
 	}
-	copilotCmd := func(agent, event string) string { return commandCli + " hook " + agent + " " + event }
+	copilotCmd := func(agent, event string) string { return commandCli + " agent hook " + agent + " " + event }
 	hookFile := func(relFile string, install func(string, hookCmd), cmd hookCmd) {
 		install(filepath.Join(base.Root, filepath.FromSlash(relFile)), cmd)
 		excludeLocally(base, "/"+relFile)
-		written = append(written, relFile)
+		res.Written = append(res.Written, relFile)
 	}
 	if !flags.Has("no-claude") {
 		hookFile(".claude/settings.local.json", installClaude, claudeCmd)
@@ -238,11 +178,9 @@ func initProject(base BaseLoc, flags Flags) initResult {
 	if !flags.Has("no-copilot") {
 		hookFile(".github/hooks/git-memory.json", installCopilot, copilotCmd)
 	}
-
 	// The command files may be committed, so they read the same on every machine (see commands.go).
-	var cmds commandsResult
 	if !flags.Has("no-commands") {
-		cmds = installCommands(base, commandCli, "Bash("+commandCli+" *)", !flags.Has("no-claude"), !flags.Has("no-copilot"))
+		res.Commands = installCommands(base, commandCli, "Bash("+commandCli+" *)", !flags.Has("no-claude"), !flags.Has("no-copilot"))
 	}
-	return initResult{Written: written, Loc: loc, Cfg: cfg, Scopes: scopes, Warnings: warnings, Commands: cmds, SetupIsNew: isNew}
+	return res
 }

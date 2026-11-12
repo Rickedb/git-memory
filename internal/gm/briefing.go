@@ -7,8 +7,13 @@ import (
 
 func day(p *Page) string { return runeSlice(p.Meta.Updated(), 10) }
 
-// scopeTag marks where a memory applies (personal, project, global or a named scope).
-func scopeTag(p *Page) string { return " {" + p.Scope + "}" }
+// scopeTag marks the memories that apply to every project.
+func scopeTag(p *Page) string {
+	if p.Scope == "global" {
+		return " {global}"
+	}
+	return ""
+}
 
 func firstLine(p *Page) string {
 	for _, l := range strings.Split(p.Body, "\n") {
@@ -39,7 +44,7 @@ func firstN(pages []*Page, n int) []*Page {
 // buildBriefing is the bounded context injected at session start, built from the active pages of every scope. It is
 // written as plain facts, not commands. Pinned (core) pages come first, then every decision, then recent
 // procedures/facts/notes and sessions.
-func buildBriefing(allPages []*Page, cfg Config) string {
+func buildBriefing(allPages []*Page, cfg Config, project, cli string) string {
 	pages := filterPages(allPages, isActive)
 	if len(pages) == 0 {
 		return ""
@@ -97,7 +102,7 @@ func buildBriefing(allPages []*Page, cfg Config) string {
 		}
 	}
 
-	parts = append(parts, fmt.Sprintf("Memory lookup (run from the repository root): `%[1]s search \"<terms>\"` finds earlier decisions and sessions; `%[1]s show <ref>` prints a page; `%[1]s remember \"<text>\" --kind decision` stores a new one.", cfg.CLI))
+	parts = append(parts, fmt.Sprintf("The memory is a git repository, and %[1]s is git run inside it (run from the project's root). %[1]s grep -n -i \"<terms>\" -- %[2]s %[3]s finds earlier decisions and sessions; %[1]s show HEAD:<path> prints a page; to store a new one, write a markdown page under %[2]s/memories/<kind>/ and commit it with %[1]s add / %[1]s commit.", cli, project, globalRel))
 	return truncate(strings.Join(parts, "\n\n"), b.MaxChars)
 }
 
@@ -121,7 +126,7 @@ func buildRecall(pages []*Page, cfg Config, prompt string) string {
 	}
 	var lines []string
 	for _, h := range hits {
-		lines = append(lines, fmt.Sprintf("- [%s] {%s} %s (%s): %s", h.Kind, h.Scope, h.Title, h.Ref, h.Snippet))
+		lines = append(lines, fmt.Sprintf("- [%s]%s %s (%s): %s", h.Kind, map[bool]string{true: " {global}"}[h.Scope == "global"], h.Title, h.Ref, h.Snippet))
 	}
 	return truncate("Possibly related project memory (git-memory):\n"+strings.Join(lines, "\n"), r.MaxChars)
 }

@@ -4,7 +4,7 @@ package main
 import (
 	"os"
 
-	"git-memory/internal/gm"
+	"github.com/Rickedb/git-memory/internal/gm"
 )
 
 func main() {

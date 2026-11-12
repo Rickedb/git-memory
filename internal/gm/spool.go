@@ -13,8 +13,8 @@ import (
 // Hook events are appended to a per-session JSONL file under .git/git-memory/spool. Appending is the only work done on
 // hot paths (tool calls); git is touched later, when a session page is compiled and committed.
 
-func spoolFile(loc *Loc, agent, sid string) string {
-	return filepath.Join(loc.Spool, agent+"-"+sid+".jsonl")
+func spoolFile(dir, agent, sid string) string {
+	return filepath.Join(dir, agent+"-"+sid+".jsonl")
 }
 
 func lastLine(file string) string {
@@ -45,9 +45,9 @@ func eventBody(e Event) string {
 }
 
 // appendEvent returns false when the event was dropped as a duplicate.
-func appendEvent(loc *Loc, agent, sid string, e Event) bool {
-	file := spoolFile(loc, agent, sid)
-	mkdirAll(loc.Spool)
+func appendEvent(dir, agent, sid string, e Event) bool {
+	file := spoolFile(dir, agent, sid)
+	mkdirAll(dir)
 	e.T = nowMs()
 	if prev := lastLine(file); prev != "" {
 		// The same hook can fire twice when Copilot also reads .claude/settings.json.
@@ -82,15 +82,15 @@ func readEvents(file string) []Event {
 	return out
 }
 
-func listSpools(loc *Loc) []string {
-	entries, err := os.ReadDir(loc.Spool)
+func listSpools(dir string) []string {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
 	var out []string
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".jsonl") {
-			out = append(out, filepath.Join(loc.Spool, e.Name()))
+			out = append(out, filepath.Join(dir, e.Name()))
 		}
 	}
 	return out
@@ -114,8 +114,8 @@ func markCompiled(file string) {
 	writeFile(markerFile(file), strconv.FormatInt(st.Size(), 10))
 }
 
-func purgeOld(loc *Loc, days int) {
-	for _, file := range listSpools(loc) {
+func purgeOld(dir string, days int) {
+	for _, file := range listSpools(dir) {
 		st, err := os.Stat(file)
 		if err == nil && time.Since(st.ModTime()) > time.Duration(days)*24*time.Hour && isCompiled(file) {
 			os.Remove(file)
