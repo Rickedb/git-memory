@@ -19,20 +19,6 @@ func TestTokenize(t *testing.T) {
 	}
 }
 
-func TestNormalizeEvent(t *testing.T) {
-	for in, want := range map[string]hookEvent{
-		"SessionStart": evStart, "sessionStart": evStart, "session_start": evStart, "userPromptSubmitted": evPrompt, "UserPromptSubmit": evPrompt,
-		"agentStop": evStop, "Stop": evStop, "PostToolUse": evTool, "PostToolUseFailure": evToolFail, "preCompact": evPreCompact, "SessionEnd": evEnd,
-	} {
-		if got, ok := normalizeEvent(in); !ok || got != want {
-			t.Errorf("normalizeEvent(%q) = %q, %v", in, got, ok)
-		}
-	}
-	if _, ok := normalizeEvent("nope"); ok {
-		t.Error("unknown event accepted")
-	}
-}
-
 func TestCompileSession(t *testing.T) {
 	t0 := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC).UnixMilli()
 	page := compileSession([]core.Event{

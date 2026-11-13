@@ -169,7 +169,7 @@ It prints what it did (`demoted global/memories/decision/use-rest.md → project
 
 Like `promote`, it runs inside a project, because "this project" is where the page goes. It uses the `.git-memory` of the project's root.
 
-### `git-memory agent init [--no-claude] [--no-copilot] [--no-commands]`
+### `git-memory agent init [--no-claude] [--no-copilot] [--no-commands] [--no-instructions]`
 
 Wires **the project in the current directory** to the memory repository. Run it once per project, from inside the project.
 
@@ -178,7 +178,8 @@ cd your-project
 git-memory agent init                  # Claude Code + Copilot hooks, and the slash commands
 git-memory agent init --no-copilot     # Claude Code only
 git-memory agent init --no-claude      # Copilot only
-git-memory agent init --no-commands    # hooks only, no slash commands
+git-memory agent init --no-commands    # no slash commands
+git-memory agent init --no-instructions  # no instructions file
 ```
 
 | Writes | What it is |
@@ -186,6 +187,7 @@ git-memory agent init --no-commands    # hooks only, no slash commands
 | `.claude/settings.local.json` | Claude Code hooks (skipped with `--no-claude`) |
 | `.github/hooks/git-memory.json` | Copilot hooks (skipped with `--no-copilot`) |
 | `.claude/skills/*`, `.github/prompts/*` | the slash commands `/remember /decide /recall /memories /list /promote /forget` (skipped with `--no-commands`) |
+| `.claude/rules/git-memory.md`, `.github/instructions/git-memory.instructions.md` | the agent's always-loaded instructions: the memory repository's folder layout and how to read it (`grep`, `show`, `list`, …) (skipped with `--no-instructions`) |
 | `.git/git-memory/gm` | the launcher the hook files call (a small script that runs the installed binary) |
 
 It adds nothing to your project's tracked files: everything is git-excluded or lives under `.git`. It also creates the project's `.git-memory` (git-excluded too) if there is none, and never touches one that is there, or a folder of that name that holds other files. It is safe to re-run (after upgrading, or to refresh the commands); your own hooks, settings and same-named command files are kept. Hook entries written by earlier development builds are replaced.

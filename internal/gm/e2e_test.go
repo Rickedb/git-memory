@@ -1029,6 +1029,37 @@ func TestCommandsNeverOverwriteYourOwnFiles(t *testing.T) {
 	e.ok(e.exists(filepath.Join(onlyClaude, ".claude/skills/recall/SKILL.md")) && !e.exists(filepath.Join(onlyClaude, ".github/prompts")), "--no-copilot")
 }
 
+// init writes each agent's always-loaded instructions: the memory layout and how to read it. Own files are kept.
+func TestAgentInitWritesInstructions(t *testing.T) {
+	e := newEnv(t)
+	dir := e.newRepo("instr")
+	out := e.agentInit(dir)
+	e.has(out, "wrote .claude/rules/git-memory.md")
+	e.has(out, "wrote .github/instructions/git-memory.instructions.md")
+
+	claude := e.read(filepath.Join(dir, ".claude/rules/git-memory.md"))
+	for _, want := range []string{"git-memory:generated", "projects/gm-instr", "memories/<kind>", "sessions/YYYY/MM", "global/", "./.git/git-memory/gm grep", "show HEAD:<path>"} {
+		e.has(claude, want)
+	}
+	e.ok(!strings.Contains(claude, "{SLUG}") && !strings.Contains(claude, "{GM}") && !strings.Contains(claude, "§"), "placeholders left in the instructions")
+	e.ok(strings.HasPrefix(claude, "<!--"), "Claude's rules file must not start with frontmatter (it would restrict where it applies)")
+	e.ok(strings.HasPrefix(e.read(filepath.Join(dir, ".github/instructions/git-memory.instructions.md")), "---\napplyTo: \"**\"\n---"), "Copilot's file needs applyTo")
+
+	// git-excluded, and the user's own file is never overwritten
+	e.ok(!strings.Contains(e.git(dir, "status", "--porcelain"), "instructions") && !strings.Contains(e.git(dir, "status", "--porcelain"), "rules"), "instructions files show in git status")
+	own := "my own rules\n"
+	e.write(filepath.Join(dir, ".claude/rules/git-memory.md"), own)
+	e.has(e.agentInit(dir), "note: kept your own .claude/rules/git-memory.md")
+	e.eq(e.read(filepath.Join(dir, ".claude/rules/git-memory.md")), own)
+
+	none := e.newRepo("instr2")
+	e.lacks(e.agentInit(none, "--no-instructions"), "wrote .claude/rules")
+	e.ok(!e.exists(filepath.Join(none, ".claude/rules")) && !e.exists(filepath.Join(none, ".github/instructions")), "written despite --no-instructions")
+	only := e.newRepo("instr3")
+	e.agentInit(only, "--no-copilot")
+	e.ok(e.exists(filepath.Join(only, ".claude/rules/git-memory.md")) && !e.exists(filepath.Join(only, ".github/instructions")), "--no-copilot")
+}
+
 // Every command line the generated files tell the agent to run must exist, and the flows they describe must work with
 // nothing but git: that is the whole point of the design.
 func TestEveryCommandLineInTheGeneratedFilesWorks(t *testing.T) {

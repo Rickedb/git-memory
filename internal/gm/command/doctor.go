@@ -10,28 +10,10 @@ import (
 
 	"github.com/Rickedb/git-memory/internal/gm/core"
 	"github.com/Rickedb/git-memory/internal/gm/hook"
+	"github.com/Rickedb/git-memory/internal/gm/hook/agent"
 )
 
 type healthRow struct{ status, label, detail string } // status: ok | warn | error | info
-
-// hookCommands lists our hook commands in a Claude settings or Copilot hook file.
-func hookCommands(file string) []string {
-	var out []string
-	for _, entries := range core.AsObj(core.ReadJSON(file)["hooks"]) {
-		for _, g := range asSlice(entries) {
-			candidates := asSlice(core.AsObj(g)["hooks"])
-			if candidates == nil {
-				candidates = []any{g}
-			}
-			for _, h := range candidates {
-				if c := core.AsObj(h)["command"]; isOurs(c) {
-					out = append(out, c.(string))
-				}
-			}
-		}
-	}
-	return out
-}
 
 // countCommands is how many generated slash commands are present.
 func countCommands(root string) (claude, copilot int) {
@@ -120,11 +102,6 @@ func checkProject(p *core.Project, add func(status, label, detail string)) {
 	add("ok", "Project folder", p.DirRel())
 	add("ok", "Pages", fmt.Sprintf("%s and %s in this project, %d global", plural(own, "memory", "memories"), plural(sessions, "session", "sessions"), global))
 
-	var claude []string
-	for _, f := range []string{".claude/settings.local.json", ".claude/settings.json"} {
-		claude = append(claude, hookCommands(filepath.Join(p.Root, filepath.FromSlash(f)))...)
-	}
-	copilot := hookCommands(filepath.Join(p.Root, ".github", "hooks", "git-memory.json"))
 	hookRow := func(label string, got, want int) {
 		switch {
 		case got == 0:
@@ -135,8 +112,15 @@ func checkProject(p *core.Project, add func(status, label, detail string)) {
 			add("ok", label, fmt.Sprintf("%d events", got))
 		}
 	}
-	hookRow("Claude Code hooks", len(claude), len(claudeEvents))
-	hookRow("Copilot hooks", len(copilot), len(copilotEvents))
+	wired := 0 // our hook entries, over all agents
+	for _, a := range hook.Agents {
+		var ours []string
+		for _, f := range a.HookFiles {
+			ours = append(ours, agent.HookCommands(filepath.Join(p.Root, filepath.FromSlash(f)))...)
+		}
+		wired += len(ours)
+		hookRow(a.Label+" hooks", len(ours), len(a.Events))
+	}
 
 	cc, cp := countCommands(p.Root)
 	total := len(commands)
@@ -152,7 +136,7 @@ func checkProject(p *core.Project, add func(status, label, detail string)) {
 
 	launcher := filepath.Join(p.Data, core.WrapperName())
 	if !core.Exists(launcher) {
-		if len(claude)+len(copilot) > 0 { // hooks that call a launcher that is gone
+		if wired > 0 { // hooks that call a launcher that is gone
 			add("error", "Hook launcher", "missing: run git-memory agent init")
 		} else {
 			add("info", "Hook launcher", "not installed (git-memory agent init)")

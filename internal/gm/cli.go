@@ -53,7 +53,7 @@ git-memory keeps five words for itself, all unknown to git:
   git-memory demote <page>...
                              the opposite: narrow a global memory to this project (moves it from global/ to the
                              project's folder).
-  git-memory agent init [--no-claude] [--no-copilot] [--no-commands]
+  git-memory agent init [--no-claude] [--no-copilot] [--no-commands] [--no-instructions]
                              wire the project in the current directory: creates its .git-memory (if missing) and the
                              Claude Code and Copilot hooks (session capture, briefing, recall) and slash commands.
                              Adds nothing to the project's tracked files.

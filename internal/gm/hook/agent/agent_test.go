@@ -1,4 +1,4 @@
-package command
+package agent
 
 import (
 	"testing"
@@ -16,12 +16,12 @@ func TestIsOursMatchesOldAndNewHookCommands(t *testing.T) {
 		`node .claude/git-memory.mjs hook claude Stop`,
 		`git-memory hook claude Stop`,
 	} {
-		if !isOurs(c) {
+		if !IsOurs(c) {
 			t.Errorf("not recognized: %s", c)
 		}
 	}
 	for _, c := range []string{`echo hook claude`, `./scripts/other.sh hook x`, `prettier --write`} {
-		if isOurs(c) {
+		if IsOurs(c) {
 			t.Errorf("wrongly claimed: %s", c)
 		}
 	}

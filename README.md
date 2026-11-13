@@ -172,7 +172,7 @@ git-memory list [repo|claude|copilot|sessions] [date]…
 git-memory promote <source>… --to project|global     copy or move memories into this project's folder or the global one
 git-memory demote <page>…                            the opposite: narrow a global memory to this project
 
-git-memory agent init [--no-claude] [--no-copilot] [--no-commands]
+git-memory agent init [--no-claude] [--no-copilot] [--no-commands] [--no-instructions]
 git-memory agent hook <claude|copilot> <event>      what the agents' hook files call
 git-memory agent version
 ```
@@ -215,8 +215,13 @@ Layout: `cmd/git-memory` is the entry point, and the rest is `internal/gm`, in l
 
 ```
 internal/gm/           the command line: routing to git, the help, dispatching our own commands (and the Windows/Unix process exec)
-internal/gm/command/   our own commands: doctor, list, promote, demote, agent init, the slash commands, the agents' memory folders
-internal/gm/hook/      what the agents' hooks run: events, spool, session pages, briefing, recall, "remember that …" triggers
+internal/gm/command/   our own commands, one file each: doctor, list, promote, demote, agent_init (plus slash.go, sources.go,
+                        launcher.go and pages.go, which they share)
+internal/gm/hook/      what the agents' hooks run, one file per event (start, prompt, tool, stop, precompact, end), plus the
+                        spool, session pages, briefing, recall and "remember that …" triggers they share
+internal/gm/hook/claude/    Claude Code: its event names, its settings file, what its hooks print (recall: yes)
+internal/gm/hook/copilot/   Copilot: the same for Copilot (no failed-tool event, no recall)
+internal/gm/hook/agent/     the contract between the two: event kinds, the Agent type, recognising our own hook entries
 internal/gm/core/      the memory repository and pages, the plain-git helpers, redaction, settings (uses nothing else of ours)
 ```
 
