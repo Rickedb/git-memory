@@ -2,10 +2,10 @@
 
 Persistent memory for AI coding agents where **everything is git**. There is no server, no database, no account and no config file.
 
-`git-memory` is `git`, pointed at one repository: your memory repository, `~/.git-memory`.
+`git-memory` is `git`, pointed at one repository: the memory repository, the `.git-memory` folder of the folder you are in (as a project's repository is its `.git`).
 
 ```bash
-git-memory add . && git-memory commit -m "note about retries"     # = git -C ~/.git-memory add . && … commit …
+git-memory add . && git-memory commit -m "note about retries"     # = git -C .git-memory add . && … commit …
 git-memory log --oneline
 git-memory grep -n -i "retry"
 git-memory remote add origin git@github.com:me/memory.git && git-memory push
@@ -60,19 +60,19 @@ The only requirement is `git`. Having `git-memory` on your `PATH` also makes `gi
 ## Quick start
 
 ```bash
-git-memory clone git@github.com:me/memory.git     # optional: bring an existing memory repository
 cd your-project
-git-memory agent init                             # wire this project's agents to it
+git-memory clone git@github.com:me/memory.git     # optional: bring an existing memory repository (into ./.git-memory)
+git-memory agent init                             # wire this project's agents to it (creates ./.git-memory if there is none)
 ```
 
-That is the whole setup, and **it adds nothing to your project**: the hook wiring and slash commands are git-excluded, and memories live in `~/.git-memory`, outside the project. Without the `clone` step the memory repository is simply created (`git init`) the first time it is needed.
+That is the whole setup, and **it adds nothing to your project's tracked files**: the hook wiring, the slash commands and the `.git-memory` folder itself are git-excluded (`.git/info/exclude`, not your `.gitignore`).
 
 ## The memory repository
 
-A plain git repository, and its location is not configurable: it is the `.git-memory` folder in your home, as a project's repository is its `.git` folder. It is created on first use only if that folder is missing or empty; a folder that already holds something else is never initialised behind your back (`git-memory init` is the explicit way, and `git-memory clone <url>` the way to use an existing repository).
+A plain git repository, and its location is not configurable: it is the `.git-memory` folder in the folder you are in. **git-memory never searches for it**, up the tree or anywhere else: be in the folder that has it (for a project, its root) and every command runs git there. Nothing creates it by accident: `git-memory init` makes one here, `git-memory clone <url>` clones one here, and `git-memory agent init` makes the project's own; any other command in a folder without one says so and does nothing. The agent hooks use the `.git-memory` of the project's root.
 
 ```
-~/.git-memory/
+.git-memory/
   projects/<project>/
     sessions/2026/11/2026-11-12-claude-ab12cd34.md     one page per agent session (written by the hooks)
     memories/<kind>/<title>.md                         decisions, procedures, facts, notes
@@ -139,7 +139,7 @@ Curating is git:
 
 ## Slash commands
 
-`git-memory agent init` also installs six commands for Claude Code (skills) and Copilot (prompt files), git-excluded like the hooks. They teach the agent to use git on the memory repository:
+`git-memory agent init` also installs seven commands for Claude Code (skills) and Copilot (prompt files), git-excluded like the hooks. They teach the agent to use git on the memory repository:
 
 | Command | What it does |
 | --- | --- |
@@ -147,10 +147,13 @@ Curating is git:
 | `/decide` | reviews the conversation, proposes the decisions, procedures and facts worth keeping, and saves the ones you approve |
 | `/recall <topic>` | `git grep`s the memory and answers from it, citing pages by path |
 | `/memories` | where the memory is, what changed recently, anything uncommitted |
+| `/list [scope]` | lists the memories of a scope (`claude`, `copilot`, `personal` for the global ones, `project`, or any folder of the memory repository), or the project's `sessions` (optionally of one date), and says what each one is for |
 | `/promote` | promotes a memory to this project or to every project (also the agents' own memories) |
 | `/forget` | retires a decision (`status: superseded`) or deletes a page |
 
 Commands that write are user-only (the model never invokes them on its own). The files are the same on every machine: they call the CLI as `./.git/git-memory/gm` (relative to the repository root) and contain no home directory or memory location. To share them with the team, `git add -f .claude/skills .github/prompts`: a teammate's `agent init` regenerates byte-identical files, so nothing shows up as modified. A file of yours with the same name is never overwritten.
+
+If `./.git/git-memory/gm` is missing (a fresh clone, a new machine), every command tells the agent to say what is missing, show how to install it (`install.sh` / `install.ps1`, then `git-memory agent init`) and ask before running anything. The commands use no `!` shell injection on purpose: Claude Code aborts the whole skill when an injected command fails, which is what happened on a repository with no commits yet.
 
 ## Commands
 
@@ -158,11 +161,14 @@ The full guide, with the everyday recipes (cloning, committing, searching, synci
 
 ```
 git-memory <git command> [args…]     git <git command> [args…], inside the memory repository
-git-memory clone <url>               clone an existing memory repository into ~/.git-memory
-git-memory init                      git init there, explicitly
+git-memory clone <url>               clone an existing memory repository into ./.git-memory
+git-memory init                      git init here: creates ./.git-memory
 
 git-memory doctor [--report]         the version and a health report: repository, project folder, hooks, activity, errors,
                                      and the agents' own memories it finds (Claude Code, Copilot)
+git-memory list [repo|claude|copilot|sessions] [date]…
+                                     every memory, grouped: the memory repository, Claude Code's own, Copilot's;
+                                     `sessions` lists the project's session pages, optionally of one day, month or year
 git-memory promote <source>… --to project|global     copy or move memories into this project's folder or the global one
 git-memory demote <page>…                            the opposite: narrow a global memory to this project
 
@@ -171,7 +177,7 @@ git-memory agent hook <claude|copilot> <event>      what the agents' hook files 
 git-memory agent version
 ```
 
-`agent`, `doctor`, `promote` and `demote` are the only words git-memory keeps for itself. Git has no such commands (a test checks them against the git on the machine running the tests), so nothing you type for git is ever intercepted, including `init`, `hook` and `version`, which are git's. There is nothing to configure: no config files and no environment variables.
+`agent`, `doctor`, `list`, `promote` and `demote` are the only words git-memory keeps for itself. Git has no such commands (a test checks them against the git on the machine running the tests), so nothing you type for git is ever intercepted, including `init`, `hook` and `version`, which are git's. There is nothing to configure: no config files and no environment variables.
 
 The project's `.git/git-memory/gm` is the **launcher** the hook files call. On Linux and macOS it is a two-line `sh` script that `exec`s the installed binary (so upgrading the binary needs no re-run); on Windows it is a copy of the `.exe`, so re-run `agent init` after upgrading. It is the one file with a machine-specific path, it lives under `.git`, and it is never committed.
 
@@ -205,4 +211,13 @@ make test       # go vet + go test (unit tests and end-to-end tests: the real bi
 make release    # release/git-memory_<os>_<arch> for Linux and Windows, amd64 and arm64, plus SHA256SUMS
 ```
 
-Layout: `cmd/git-memory` is the entry point; everything else is in `internal/gm`. The end-to-end tests (`e2e_test.go`) build the binary once and drive it exactly as an agent or a person would: `git-memory <git command>`, `agent init`, hooks fed on stdin, and the installed launcher.
+Layout: `cmd/git-memory` is the entry point, and the rest is `internal/gm`, in layers that only depend downwards:
+
+```
+internal/gm/           the command line: routing to git, the help, dispatching our own commands (and the Windows/Unix process exec)
+internal/gm/command/   our own commands: doctor, list, promote, demote, agent init, the slash commands, the agents' memory folders
+internal/gm/hook/      what the agents' hooks run: events, spool, session pages, briefing, recall, "remember that …" triggers
+internal/gm/core/      the memory repository and pages, the plain-git helpers, redaction, settings (uses nothing else of ours)
+```
+
+The end-to-end tests (`internal/gm/e2e_test.go`) build the binary once and drive it exactly as an agent or a person would: `git-memory <git command>`, `agent init`, hooks fed on stdin, and the installed launcher. Each package also has its own unit tests.

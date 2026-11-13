@@ -1,12 +1,9 @@
-package gm
+package core
 
-import (
-	"os"
-	"path/filepath"
-)
+import "path/filepath"
 
 // There are no config files and no environment variables. Like git, which is "the .git folder", git-memory is "the
-// ~/.git-memory folder": that is where everything lives. Behaviour is fixed by these defaults.
+// .git-memory folder": that is where everything lives. Behaviour is fixed by these defaults.
 type Config struct {
 	Briefing          BriefingConfig
 	Recall            RecallConfig
@@ -28,7 +25,7 @@ type CaptureConfig struct {
 	MaxPromptChars, MaxOutcomeChars int
 }
 
-func defaultConfig() Config {
+func DefaultConfig() Config {
 	return Config{
 		Briefing:          BriefingConfig{MaxChars: 6000, RecentSessions: 3, RecentMemories: 8, MaxDecisions: 30},
 		Recall:            RecallConfig{Enabled: true, MaxChars: 2500, Limit: 4, MinPromptChars: 15},
@@ -38,12 +35,15 @@ func defaultConfig() Config {
 	}
 }
 
-// memoryDir is the memory repository: the .git-memory folder in the user's home. It is a plain git repository that every
-// git-memory command runs git in.
-func memoryDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		fail("cannot find your home directory, where the memory repository (.git-memory) lives")
+// memoryFolder is the name of the memory repository's folder, as ".git" is git's.
+const MemoryFolder = ".git-memory"
+
+// memoryDirFor is the memory repository of the folder dir: its .git-memory folder, exactly there. Like git-memory's
+// commands, it never searches the folders above. It is a plain git repository that every git-memory command runs git in.
+func MemoryDirFor(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil || dir == "" {
+		Fail("cannot tell which folder you are in")
 	}
-	return filepath.Join(home, ".git-memory")
+	return filepath.Join(abs, MemoryFolder)
 }

@@ -1,11 +1,11 @@
-package gm
+package core
 
 import (
 	"path/filepath"
 	"strings"
 )
 
-type rememberInput struct {
+type RememberInput struct {
 	Text  string
 	Kind  string
 	Title string
@@ -17,41 +17,41 @@ type rememberInput struct {
 
 // remember stores (or updates) a durable memory page in the project's folder of the memory repository and commits it.
 // It returns the page's path in the repository.
-func (p *Project) remember(in rememberInput) string { return p.rememberIn(p.DirRel(), in) }
+func (p *Project) Remember(in RememberInput) string { return p.RememberIn(p.DirRel(), in) }
 
 // rememberIn is remember for any folder of the memory repository (the project's, or global).
-func (p *Project) rememberIn(folder string, in rememberInput) string {
+func (p *Project) RememberIn(folder string, in RememberInput) string {
 	kind := in.Kind
 	if kind == "" {
 		kind = "note"
 	}
-	if !isKind(kind) {
-		fail("kind must be one of: %s", strings.Join(kinds, ", "))
+	if !IsKind(kind) {
+		Fail("kind must be one of: %s", strings.Join(kinds, ", "))
 	}
-	body := strings.TrimSpace(clean(in.Text, 8000))
+	body := strings.TrimSpace(Clean(in.Text, 8000))
 	if body == "" {
-		fail("nothing to remember")
+		Fail("nothing to remember")
 	}
 	var heading string
 	if in.Title != "" {
-		heading = clean(in.Title, 100)
+		heading = Clean(in.Title, 100)
 	} else {
 		first, _, _ := strings.Cut(body, "\n")
-		heading = oneLine(first, 70)
+		heading = OneLine(first, 70)
 	}
 	dir := "memories/" + kind
 	if in.Core {
 		dir = "core"
 	}
-	rel := dir + "/" + slugify(heading, 60) + ".md"
+	rel := dir + "/" + Slugify(heading, 60) + ".md"
 	repoPath := folder + "/" + rel
-	ensureMemoryRepo(p.Mem)
-	withLock(p.Mem, func() {
+	RequireMemoryRepo(p.Mem)
+	WithLock(p.Mem, func() {
 		dest := filepath.Join(p.Mem, filepath.FromSlash(folder), filepath.FromSlash(rel))
 		now := nowISO()
 		created := now
-		if old, ok := readFileTry(dest); ok {
-			if c := parsePage(old, rel, "").Meta.Str("created"); c != "" {
+		if old, ok := ReadFileTry(dest); ok {
+			if c := ParsePage(old, rel, "").Meta.Str("created"); c != "" {
 				created = c
 			}
 		}
@@ -59,14 +59,14 @@ func (p *Project) rememberIn(folder string, in rememberInput) string {
 		if in.Core {
 			tier = "core"
 		}
-		meta := newMeta().Set("id", strings.TrimSuffix(rel, ".md")).Set("kind", kind).Set("tier", tier).SetList("tags", in.Tags)
+		meta := NewMeta().Set("id", strings.TrimSuffix(rel, ".md")).Set("kind", kind).Set("tier", tier).SetList("tags", in.Tags)
 		for _, kv := range in.Extra {
 			meta.Set(kv[0], kv[1])
 		}
 		meta.Set("created", created).Set("updated", now)
-		mkdirAll(filepath.Dir(dest))
-		writeFile(dest, serializePage(meta, "# "+heading+"\n\n"+body))
-		commitPaths(p.Mem, "memory: remember "+oneLine(heading, 60), folder)
+		MkdirAll(filepath.Dir(dest))
+		WriteFile(dest, SerializePage(meta, "# "+heading+"\n\n"+body))
+		CommitPaths(p.Mem, "memory: remember "+OneLine(heading, 60), folder)
 	})
 	return repoPath
 }

@@ -1,4 +1,4 @@
-package gm
+package command
 
 import (
 	"fmt"
@@ -7,6 +7,9 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/Rickedb/git-memory/internal/gm/core"
+	"github.com/Rickedb/git-memory/internal/gm/hook"
 )
 
 type healthRow struct{ status, label, detail string } // status: ok | warn | error | info
@@ -14,14 +17,14 @@ type healthRow struct{ status, label, detail string } // status: ok | warn | err
 // hookCommands lists our hook commands in a Claude settings or Copilot hook file.
 func hookCommands(file string) []string {
 	var out []string
-	for _, entries := range asObj(readJSON(file)["hooks"]) {
+	for _, entries := range core.AsObj(core.ReadJSON(file)["hooks"]) {
 		for _, g := range asSlice(entries) {
-			candidates := asSlice(asObj(g)["hooks"])
+			candidates := asSlice(core.AsObj(g)["hooks"])
 			if candidates == nil {
 				candidates = []any{g}
 			}
 			for _, h := range candidates {
-				if c := asObj(h)["command"]; isOurs(c) {
+				if c := core.AsObj(h)["command"]; isOurs(c) {
 					out = append(out, c.(string))
 				}
 			}
@@ -68,41 +71,41 @@ func plural(n int, one, many string) string {
 // checkMemory looks at the memory repository, wherever the command runs.
 func checkMemory(mem string, add func(status, label, detail string)) {
 	switch {
-	case isMemoryRepo(mem):
-		branch, ok := gitTry(mem, "symbolic-ref", "--short", "HEAD")
+	case core.IsMemoryRepo(mem):
+		branch, ok := core.GitTry(mem, "symbolic-ref", "--short", "HEAD")
 		if !ok {
 			branch = "?"
 		}
 		state := "no commits yet"
-		if n, ok := gitTry(mem, "rev-list", "--count", "HEAD"); ok {
+		if n, ok := core.GitTry(mem, "rev-list", "--count", "HEAD"); ok {
 			state = plural(atoi(n), "commit", "commits")
 		}
 		add("ok", "Memory repository", fmt.Sprintf("%s (branch %s, %s)", mem, branch, state))
 
-		if remotes, _ := gitTry(mem, "remote"); remotes == "" {
+		if remotes, _ := core.GitTry(mem, "remote"); remotes == "" {
 			add("info", "Remote", "none: memory stays on this machine (git-memory remote add origin <url> to back it up)")
 		} else {
 			name, _, _ := strings.Cut(remotes, "\n")
-			url, _ := gitTry(mem, "remote", "get-url", name)
+			url, _ := core.GitTry(mem, "remote", "get-url", name)
 			add("ok", "Remote", name+" → "+url)
 		}
-		if st, _ := gitTry(mem, "status", "--porcelain"); st == "" {
+		if st, _ := core.GitTry(mem, "status", "--porcelain"); st == "" {
 			add("ok", "Uncommitted changes", "none")
 		} else {
 			add("warn", "Uncommitted changes", plural(len(strings.Split(st, "\n")), "file", "files")+" (git-memory status; git-memory add / commit)")
 		}
-	case dirIsEmpty(mem):
-		add("info", "Memory repository", mem+" (not created yet: it is created the first time it is needed)")
+	case core.DirIsEmpty(mem):
+		add("warn", "Memory repository", "none at "+mem+": run git-memory init in the folder that should have one")
 	default:
 		add("error", "Memory repository", mem+" exists, is not empty and is not a git repository (git-memory init, or move it aside)")
 	}
 }
 
 // checkProject looks at the project containing cwd and how it is wired to the memory repository.
-func checkProject(p *Project, add func(status, label, detail string)) {
-	rel := func(f string) string { r, _ := filepath.Rel(p.Root, f); return slash(r) }
+func checkProject(p *core.Project, add func(status, label, detail string)) {
+	rel := func(f string) string { r, _ := filepath.Rel(p.Root, f); return core.Slash(r) }
 
-	pages := listProjectPages(p)
+	pages := core.ListProjectPages(p)
 	var own, sessions, global int
 	for _, pg := range pages {
 		switch {
@@ -147,8 +150,8 @@ func checkProject(p *Project, add func(status, label, detail string)) {
 		add("warn", "Slash commands", detail)
 	}
 
-	launcher := filepath.Join(p.Data, wrapperName())
-	if !exists(launcher) {
+	launcher := filepath.Join(p.Data, core.WrapperName())
+	if !core.Exists(launcher) {
 		if len(claude)+len(copilot) > 0 { // hooks that call a launcher that is gone
 			add("error", "Hook launcher", "missing: run git-memory agent init")
 		} else {
@@ -157,9 +160,9 @@ func checkProject(p *Project, add func(status, label, detail string)) {
 	} else {
 		add("ok", "Hook launcher", rel(launcher))
 		// The binary the launcher runs can vanish when git-memory is uninstalled or moved.
-		if text, ok := readFileTry(launcher); ok {
+		if text, ok := core.ReadFileTry(launcher); ok {
 			if m := execLine.FindStringSubmatch(text); m != nil {
-				if exists(m[1]) {
+				if core.Exists(m[1]) {
 					add("ok", "Binary used by hooks", m[1])
 				} else {
 					add("error", "Binary used by hooks", fmt.Sprintf("not found: %s (re-run git-memory agent init)", m[1]))
@@ -169,7 +172,7 @@ func checkProject(p *Project, add func(status, label, detail string)) {
 	}
 
 	var newest time.Time
-	for _, f := range listSpools(p.Spool) {
+	for _, f := range hook.ListSpools(p.Spool) {
 		if st, err := os.Stat(f); err == nil && st.ModTime().After(newest) {
 			newest = st.ModTime()
 		}
@@ -180,9 +183,9 @@ func checkProject(p *Project, add func(status, label, detail string)) {
 		add("ok", "Agent activity", "last hook event "+ago(newest))
 	}
 
-	if text, ok := readFileTry(filepath.Join(p.Data, "errors.log")); ok && strings.TrimSpace(text) != "" {
+	if text, ok := core.ReadFileTry(filepath.Join(p.Data, "errors.log")); ok && strings.TrimSpace(text) != "" {
 		lines := strings.Split(strings.TrimSpace(text), "\n")
-		add("warn", "Hook errors", fmt.Sprintf("%d logged; latest: %s", len(lines), runeSlice(lines[len(lines)-1], 160)))
+		add("warn", "Hook errors", fmt.Sprintf("%d logged; latest: %s", len(lines), core.RuneSlice(lines[len(lines)-1], 160)))
 	} else {
 		add("ok", "Hook errors", "none")
 	}
@@ -228,24 +231,30 @@ func atoi(s string) int {
 
 // runDoctor prints the version and a health report. It exits 1 when something is broken, unless --report is given
 // (what the /memories slash command uses, so a warning can never abort the block it injects).
-func runDoctor(flags Flags) int {
+func Doctor(flags core.Flags, version string) int {
 	var rows []healthRow
 	add := func(status, label, detail string) { rows = append(rows, healthRow{status, label, detail}) }
 
-	gv, _ := gitTry("", "--version")
+	gv, _ := core.GitTry("", "--version")
 	if gv == "" {
 		gv = "git: not found on PATH"
 	}
-	out(fmt.Sprintf("git-memory %s · %s", displayVersion(), gv))
+	out(fmt.Sprintf("git-memory %s · %s", version, gv))
 	out()
 
-	mem := memoryDir()
-	checkMemory(mem, add)
-	add("ok", "Global folder", globalRel+" (memories that apply to every project)")
-
 	cwd, _ := os.Getwd()
-	var p *Project
-	if err := Catch(func() { p = openProject(cwd) }); err != nil {
+	var p *core.Project
+	projectErr := core.Catch(func() { p = core.OpenProject(cwd) })
+	// the memory repository is the .git-memory folder of the project you are in, else of the folder you are in
+	mem := core.MemoryDirFor(cwd)
+	if p != nil {
+		mem = p.Mem
+	}
+	checkMemory(mem, add)
+	if core.IsMemoryRepo(mem) {
+		add("ok", "Global folder", core.GlobalRel+" (memories that apply to every project)")
+	}
+	if projectErr != nil {
 		add("info", "Project", "not inside a git project: run doctor from a project to check how it is wired")
 	} else {
 		checkProject(p, add)

@@ -1,8 +1,10 @@
-package gm
+package command
 
 import (
 	"path/filepath"
 	"strings"
+
+	"github.com/Rickedb/git-memory/internal/gm/core"
 )
 
 // generatedMarker is the first line of every generated file; init only overwrites files that carry it, never a user's own.
@@ -14,8 +16,6 @@ type commandDef struct {
 	Hint        string
 	// Writes memories: only the user may invoke it (never the model on its own initiative).
 	Writes bool
-	// Inject: Claude Code runs these shell lines before the model sees the command (arg-less, read-only commands only).
-	Inject []struct{ Title, Cmd string }
 	body   string
 }
 
@@ -24,8 +24,13 @@ func render(tpl, gm string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(tpl, "§", "`"), "{GM}", gm)
 }
 
-// whereNote is added to every command: the path is relative, so the agent has to know what it is relative to.
-const whereNote = "The CLI is §{GM}§, relative to the repository root: run it from there (in a linked worktree it is under the main repository's §.git§). It is git, run inside the user's memory repository (§{GM} doctor§ says where it is), so any git command works; use only add, commit, mv, rm and read-only ones, and never push, reset or rewrite history unless the user asks. It is created per machine by §git-memory agent init§. If that file does not exist, git-memory is not set up on this machine yet: tell the user to run that and stop, instead of trying to work around it."
+// whereNote is added to every command: the path is relative, so the agent has to know what it is relative to, and what to
+// do when the CLI is not there (a fresh clone, a new machine): offer the install instead of stopping or improvising.
+const whereNote = "The CLI is §{GM}§, relative to the repository root: run it from there (in a linked worktree it is under the main repository's §.git§). It is git, run inside the user's memory repository (§{GM} doctor§ says where it is), so any git command works; use only add, commit, mv, rm and read-only ones, and never push, reset or rewrite history unless the user asks. It is created per machine by §git-memory agent init§.\n\n" +
+	"**If §{GM}§ does not exist** (\"No such file or directory\", \"command not found\"), git-memory is not set up on this machine yet. Do not work around it and do not touch the memory files by hand. Check whether the binary is installed (§command -v git-memory§, or §Get-Command git-memory§ on Windows), then tell the user what is missing and how to fix it, and ask whether you should do it for them:\n" +
+	"- binary installed: §git-memory agent init§, run from the repository root, sets this project up (hooks, commands and the CLI launcher).\n" +
+	"- binary not installed: install it first, then run §git-memory agent init§. On Linux: §curl -fsSL https://github.com/Rickedb/git-memory/releases/latest/download/install.sh | sh§. On Windows (PowerShell): §irm https://github.com/Rickedb/git-memory/releases/latest/download/install.ps1 | iex§. It installs into the user's home directory, needs no root, and may need a new shell before §git-memory§ is on the PATH.\n\n" +
+	"Run those commands only after the user says yes; if they decline, stop. Once §{GM} doctor§ works, carry on with what the user asked. If the CLI exists but §{GM} log§ says the repository \"does not have any commits yet\", that is not an error: the memory is just empty."
 
 // commands are the slash commands worth having in an agent chat: each one adds something the typed prompt triggers
 // cannot (a model that reads the conversation, a search-and-answer loop, curation with confirmation).
@@ -84,18 +89,32 @@ var commands = []commandDef{
 		Name:        "memories",
 		Description: "Show what project memory holds: where it lives, how healthy it is, and what changed recently.",
 		Writes:      false,
-		Inject: []struct{ Title, Cmd string }{
-			{"Health", "doctor --report"},
-			{"Recent changes", "log --oneline -n 10"},
-			{"Uncommitted", "status -sb"},
-		},
-		body: `Summarize the project's memory for the user from the output above (or, if it is missing, by running §{GM} doctor --report§, §{GM} log --oneline -n 10§ and §{GM} status -sb§):
+		body: `Summarize the project's memory for the user. Run §{GM} doctor --report§, §{GM} log --oneline -n 10§ and §{GM} status -sb§ (do not chain them; a repository with no commits yet makes §log§ fail, which just means nothing was committed), then report:
 
 - the version and anything unhealthy in the checks, with the fix; where the memory repository is, and how many pages the project and global folders hold
 - what was committed recently
 - anything uncommitted or off (the user may be mid-edit in the repository)
 
 Offer §/recall <topic>§ to dig into something, and §/promote§ or §/forget§ to curate.`,
+	},
+	{
+		Name:        "list",
+		Description: "List the memories of a scope (claude, copilot, personal, project, or a folder of the memory repository), or the project's sessions, and say what each one is for.",
+		Hint:        "[claude|copilot|personal|project|sessions|<scope>] [date]",
+		Writes:      false,
+		body: `List the memories of one scope and summarize what each is for. The scope is the text typed after the command; with none, cover every scope.
+
+1. Map the scope to a listing:
+   - §claude§: §{GM} list claude§ (Claude Code's own memory for this project).
+   - §copilot§: §{GM} list copilot§ (this workspace's and the user's).
+   - §personal§ (or §global§): the memories that apply to every project: run §{GM} list repo§ and keep the group headed §.git-memory · global§.
+   - §project§ (or §repo§): the same output, the group headed §.git-memory · this project§.
+   - §sessions§: this project's session pages, the record of each agent session (not memories), newest first: §{GM} list sessions§. A date narrows it to a period: §{GM} list sessions 2026-11-13§ (a day), §2026-11§ (a month) or §2026§ (a year). If the user words it differently (today, yesterday, last month, 12 November), convert it to one of those forms; a date on its own means §sessions§.
+   - anything else is a scope the user defined, a folder of the memory repository: run §{GM} doctor --report§ for the §Memory repository:§ path, then §{GM} ls-tree -r --name-only HEAD -- <scope> projects/<scope>§ (and §{GM} status -s -- <scope> projects/<scope>§ for pages not committed yet); only the pages under §memories/§ and §core/§ count. If nothing matches, say the scope does not exist and name the ones that do: §sessions§, the groups §{GM} list§ prints, plus the folders under §projects/§ and at the top of the repository.
+   - no scope: run §{GM} list§ and handle each group in turn.
+2. Every row is §kind  title  name  — note§. The note is the page's own description, when it has one. If it already says what the memory is for, use it. Otherwise read the page (§{GM} show HEAD:<path>§ for a committed page of the memory repository; the file itself for an uncommitted one, which the session in progress always is, under the §Memory repository:§ path from §{GM} doctor --report§; and for an agent's memory the file itself too: the group heading shows its folder, the name is a path inside it). A session's note is only its date and agent, so read the page and use its §## Outcome§ section for what the session did and write one line of your own. Read only what you need: with more than about 15 memories, read the ones whose title does not explain itself.
+3. Present each group as a list: the title, its kind, and what it is for in one short sentence, i.e. when it would matter to someone working on the project (for a session: its date, and what was done or decided in it). Mark pinned and superseded ones. Never invent: if a page is empty or unclear, say so. Do not change anything.
+4. Finish with the count, and offer §/recall <topic>§ to read one in depth and §/promote§ (e.g. §claude:<file>§ into the project) or §/forget§ to curate.`,
 	},
 	{
 		Name:        "promote",
@@ -136,11 +155,8 @@ func claudeSkill(def commandDef, gm, allowedTool string) string {
 		lines = append(lines, "disable-model-invocation: true")
 	}
 	lines = append(lines, "---", generatedMarker, "")
-	for _, i := range def.Inject {
-		lines = append(lines, "## "+i.Title, "!`"+gm+" "+i.Cmd+"`", "")
-	}
 	lines = append(lines, render(def.body, gm), "", render(whereNote, gm), "")
-	return joinLines(lines)
+	return core.JoinLines(lines)
 }
 
 // copilotPrompt is the GitHub Copilot prompt file (`/name` in a Local chat session).
@@ -150,11 +166,11 @@ func copilotPrompt(def commandDef, gm string) string {
 		lines = append(lines, "argument-hint: "+def.Hint)
 	}
 	lines = append(lines, "agent: agent", "---", generatedMarker, "", render(def.body, gm), "", render(whereNote, gm), "")
-	return joinLines(lines)
+	return core.JoinLines(lines)
 }
 
 func isGenerated(file string) bool {
-	text, ok := readFileTry(file)
+	text, ok := core.ReadFileTry(file)
 	return ok && strings.Contains(text, "git-memory:generated")
 }
 
@@ -167,17 +183,17 @@ type commandsResult struct {
 // installCommands installs the commands for Claude Code (.claude/skills/<name>/SKILL.md) and Copilot
 // (.github/prompts/<name>.prompt.md). Like the hooks they are git-excluded, so the project stays clean. A same-named
 // file of the user's own is never touched.
-func installCommands(base BaseLoc, gm, allowedTool string, claude, copilot bool) commandsResult {
+func installCommands(base core.BaseLoc, gm, allowedTool string, claude, copilot bool) commandsResult {
 	var result commandsResult
 	put := func(rel, content, excludeEntry string) {
 		file := filepath.Join(base.Root, filepath.FromSlash(rel))
-		if exists(file) && !isGenerated(file) {
+		if core.Exists(file) && !isGenerated(file) {
 			result.Skipped = append(result.Skipped, rel)
 			return
 		}
-		mkdirAll(filepath.Dir(file))
-		writeFile(file, content)
-		excludeLocally(base, excludeEntry)
+		core.MkdirAll(filepath.Dir(file))
+		core.WriteFile(file, content)
+		core.ExcludeLocally(base, excludeEntry)
 		result.Written = append(result.Written, rel)
 	}
 	for _, def := range commands {

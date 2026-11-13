@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/Rickedb/git-memory/internal/gm/core"
 )
 
 func installScript(t *testing.T) string {
@@ -40,7 +42,7 @@ func (e *env) releases() (url, root string) {
 	for _, sub := range []string{"latest/download", "download/v0.0.1"} {
 		e.write(filepath.Join(root, filepath.FromSlash(sub), asset), string(bin))
 		e.write(filepath.Join(root, filepath.FromSlash(sub), "SHA256SUMS"), hex.EncodeToString(sum[:])+"  "+asset+"\n")
-		check(os.Chmod(filepath.Join(root, filepath.FromSlash(sub), asset), 0o755))
+		core.Check(os.Chmod(filepath.Join(root, filepath.FromSlash(sub), asset), 0o755))
 	}
 	srv := httptest.NewServer(http.FileServer(http.Dir(root)))
 	e.t.Cleanup(srv.Close)
@@ -65,7 +67,7 @@ func TestInstallShDownloadsVerifiesInstallsAndAddsToPath(t *testing.T) {
 	linuxOnly(t)
 	e := newEnv(t)
 	url, _ := e.releases()
-	home := filepath.Dir(e.home)
+	home := e.user
 	dir := filepath.Join(home, ".local", "bin")
 	e.extra = []string{"SHELL=/bin/bash"}
 
@@ -104,7 +106,7 @@ func TestInstallShFollowsTheUsersShell(t *testing.T) {
 	for shell, rcName := range map[string]string{"/bin/zsh": ".zshrc", "/bin/dash": ".profile", "/usr/bin/ksh": ".profile"} {
 		e := newEnv(t)
 		url, _ := e.releases()
-		home := filepath.Dir(e.home)
+		home := e.user
 		e.extra = []string{"SHELL=" + shell, "ZDOTDIR="}
 		_, errOut, code := e.install(url)
 		e.eq(code, 0, errOut)
@@ -115,7 +117,7 @@ func TestInstallShFollowsTheUsersShell(t *testing.T) {
 	if _, err := exec.LookPath("fish"); err == nil {
 		e := newEnv(t)
 		url, _ := e.releases()
-		home := filepath.Dir(e.home)
+		home := e.user
 		e.extra = []string{"SHELL=/usr/bin/fish"}
 		stdout, errOut, code := e.install(url)
 		e.eq(code, 0, errOut)
@@ -130,7 +132,7 @@ func TestInstallShLeavesThePathAloneWhenAskedOrWhenItIsThere(t *testing.T) {
 	linuxOnly(t)
 	e := newEnv(t)
 	url, _ := e.releases()
-	home := filepath.Dir(e.home)
+	home := e.user
 	dir := filepath.Join(home, "tools")
 	e.extra = []string{"SHELL=/bin/bash"}
 
@@ -196,7 +198,7 @@ func TestInstallShExplainsPlatformsItCannotInstall(t *testing.T) {
 	url, _ := e.releases()
 	fake := e.mkdir("fakebin") // a uname that reports another machine
 	e.write(filepath.Join(fake, "uname"), "#!/bin/sh\nif [ \"$1\" = -s ]; then echo \"$FAKE_OS\"; else echo \"$FAKE_ARCH\"; fi\n")
-	check(os.Chmod(filepath.Join(fake, "uname"), 0o755))
+	core.Check(os.Chmod(filepath.Join(fake, "uname"), 0o755))
 
 	for _, c := range []struct{ os, arch, want string }{
 		{"Darwin", "arm64", "no macOS build in the releases yet"},

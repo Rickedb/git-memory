@@ -1,4 +1,4 @@
-package gm
+package hook
 
 import (
 	"fmt"
@@ -6,11 +6,13 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Rickedb/git-memory/internal/gm/core"
 )
 
 type compiledSession struct {
 	Rel  string
-	Meta *Meta
+	Meta *core.Meta
 	Body string
 	Text string
 }
@@ -18,8 +20,8 @@ type compiledSession struct {
 func pad(n int) string { return fmt.Sprintf("%02d", n) }
 
 // compileSession turns a session's event stream into a readable markdown page. It is pure: no I/O.
-func compileSession(events []Event, agent, sid string) compiledSession {
-	first := Event{T: nowMs(), Ev: "start"}
+func compileSession(events []core.Event, agent, sid string) compiledSession {
+	first := core.Event{T: core.NowMs(), Ev: "start"}
 	if len(events) > 0 {
 		first = events[0]
 	}
@@ -28,11 +30,11 @@ func compileSession(events []Event, agent, sid string) compiledSession {
 		last = events[len(events)-1]
 	}
 	d := time.UnixMilli(first.T).UTC()
-	sid8 := runeSlice(sid, 8)
+	sid8 := core.RuneSlice(sid, 8)
 	rel := fmt.Sprintf("sessions/%d/%s/%d-%s-%s-%s-%s.md", d.Year(), pad(int(d.Month())), d.Year(), pad(int(d.Month())), pad(d.Day()), agent, sid8)
 
-	var start *Event
-	var prompts []Event
+	var start *core.Event
+	var prompts []core.Event
 	for i := range events {
 		switch events[i].Ev {
 		case "start":
@@ -78,11 +80,11 @@ func compileSession(events []Event, agent, sid string) compiledSession {
 
 	title := "Session " + sid8
 	if len(prompts) > 0 {
-		title = oneLine(prompts[0].Text, 80)
+		title = core.OneLine(prompts[0].Text, 80)
 	}
 	var tags []string
 	for _, f := range fileOrder {
-		if i := strings.Index(f, "/"); i >= 0 && !contains(tags, f[:i]) {
+		if i := strings.Index(f, "/"); i >= 0 && !core.Contains(tags, f[:i]) {
 			tags = append(tags, f[:i])
 		}
 	}
@@ -109,7 +111,7 @@ func compileSession(events []Event, agent, sid string) compiledSession {
 			if i >= 20 {
 				break
 			}
-			body = append(body, fmt.Sprintf("%d. %s", i+1, oneLine(p.Text, 300)))
+			body = append(body, fmt.Sprintf("%d. %s", i+1, core.OneLine(p.Text, 300)))
 		}
 		if len(prompts) > 20 {
 			body = append(body, fmt.Sprintf("- … %d more", len(prompts)-20))
@@ -139,7 +141,7 @@ func compileSession(events []Event, agent, sid string) compiledSession {
 				continue
 			}
 			seen[c.command] = true
-			line := "- `" + strings.ReplaceAll(oneLine(c.command, 160), "`", "'") + "`"
+			line := "- `" + strings.ReplaceAll(core.OneLine(c.command, 160), "`", "'") + "`"
 			if c.failed {
 				line += " (failed)"
 			}
@@ -152,15 +154,15 @@ func compileSession(events []Event, agent, sid string) compiledSession {
 	}
 
 	id := strings.TrimSuffix(strings.TrimPrefix(rel, "sessions/"), ".md")
-	meta := newMeta().Set("id", id).Set("kind", "session").Set("tier", "episodic").Set("agent", agent).Set("session", sid).
-		SetList("tags", tags).Set("created", iso(time.UnixMilli(first.T))).Set("updated", iso(time.UnixMilli(last.T)))
-	text := joinLines(body)
-	return compiledSession{Rel: rel, Meta: meta, Body: text, Text: serializePage(meta, text)}
+	meta := core.NewMeta().Set("id", id).Set("kind", "session").Set("tier", "episodic").Set("agent", agent).Set("session", sid).
+		SetList("tags", tags).Set("created", core.Iso(time.UnixMilli(first.T))).Set("updated", core.Iso(time.UnixMilli(last.T)))
+	text := core.JoinLines(body)
+	return compiledSession{Rel: rel, Meta: meta, Body: text, Text: core.SerializePage(meta, text)}
 }
 
 // writeSessionPage compiles one session's spool into its page under the project's sessions/ folder. A session where
 // nothing was asked (opened and closed, or a bare resume) is not worth a page or a commit.
-func writeSessionPage(p *Project, file string) *compiledSession {
+func writeSessionPage(p *core.Project, file string) *compiledSession {
 	base := strings.TrimSuffix(filepath.Base(file), ".jsonl")
 	agent, sid, _ := strings.Cut(base, "-")
 	events := readEvents(file)
@@ -179,17 +181,17 @@ func writeSessionPage(p *Project, file string) *compiledSession {
 	}
 	page := compileSession(events, agent, sid)
 	dest := filepath.Join(p.Dir(), filepath.FromSlash(page.Rel))
-	mkdirAll(filepath.Dir(dest))
-	writeFile(dest, page.Text)
+	core.MkdirAll(filepath.Dir(dest))
+	core.WriteFile(dest, page.Text)
 	markCompiled(file)
 	return &page
 }
 
 // flushStale compiles every spool of this project that changed since it was last compiled (except skip). It returns how
 // many pages were written.
-func flushStale(p *Project, skip string) int {
+func flushStale(p *core.Project, skip string) int {
 	n := 0
-	for _, file := range listSpools(p.Spool) {
+	for _, file := range ListSpools(p.Spool) {
 		if file == skip || isCompiled(file) {
 			continue
 		}

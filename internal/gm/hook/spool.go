@@ -1,4 +1,4 @@
-package gm
+package hook
 
 import (
 	"encoding/json"
@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Rickedb/git-memory/internal/gm/core"
 )
 
 // Hook events are appended to a per-session JSONL file under .git/git-memory/spool. Appending is the only work done on
@@ -35,46 +37,46 @@ func lastLine(file string) string {
 	if _, err := f.ReadAt(buf, st.Size()-n); err != nil && err != io.EOF {
 		return ""
 	}
-	lines := strings.Split(trimEnd(string(buf)), "\n")
+	lines := strings.Split(core.TrimEnd(string(buf)), "\n")
 	return lines[len(lines)-1]
 }
 
-func eventBody(e Event) string {
+func eventBody(e core.Event) string {
 	e.T = 0
-	return marshalJSON(e, false)
+	return core.MarshalJSON(e, false)
 }
 
 // appendEvent returns false when the event was dropped as a duplicate.
-func appendEvent(dir, agent, sid string, e Event) bool {
+func appendEvent(dir, agent, sid string, e core.Event) bool {
 	file := spoolFile(dir, agent, sid)
-	mkdirAll(dir)
-	e.T = nowMs()
+	core.MkdirAll(dir)
+	e.T = core.NowMs()
 	if prev := lastLine(file); prev != "" {
 		// The same hook can fire twice when Copilot also reads .claude/settings.json.
-		var p Event
+		var p core.Event
 		if json.Unmarshal([]byte(prev), &p) == nil && eventBody(p) == eventBody(e) && e.T-p.T < 2000 {
 			return false
 		}
 	}
 	f, err := os.OpenFile(file, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	check(err)
+	core.Check(err)
 	defer f.Close()
-	_, err = f.WriteString(marshalJSON(e, false) + "\n")
-	check(err)
+	_, err = f.WriteString(core.MarshalJSON(e, false) + "\n")
+	core.Check(err)
 	return true
 }
 
-func readEvents(file string) []Event {
-	text, ok := readFileTry(file)
+func readEvents(file string) []core.Event {
+	text, ok := core.ReadFileTry(file)
 	if !ok {
 		return nil
 	}
-	var out []Event
+	var out []core.Event
 	for _, line := range strings.Split(text, "\n") {
 		if line == "" {
 			continue
 		}
-		var e Event
+		var e core.Event
 		if json.Unmarshal([]byte(line), &e) == nil { // a torn line is skipped
 			out = append(out, e)
 		}
@@ -82,7 +84,7 @@ func readEvents(file string) []Event {
 	return out
 }
 
-func listSpools(dir string) []string {
+func ListSpools(dir string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -99,7 +101,7 @@ func listSpools(dir string) []string {
 func markerFile(file string) string { return strings.TrimSuffix(file, ".jsonl") + ".compiled" }
 
 func isCompiled(file string) bool {
-	text, ok := readFileTry(markerFile(file))
+	text, ok := core.ReadFileTry(markerFile(file))
 	st, err := os.Stat(file)
 	if !ok || err != nil {
 		return false
@@ -110,12 +112,12 @@ func isCompiled(file string) bool {
 
 func markCompiled(file string) {
 	st, err := os.Stat(file)
-	check(err)
-	writeFile(markerFile(file), strconv.FormatInt(st.Size(), 10))
+	core.Check(err)
+	core.WriteFile(markerFile(file), strconv.FormatInt(st.Size(), 10))
 }
 
 func purgeOld(dir string, days int) {
-	for _, file := range listSpools(dir) {
+	for _, file := range ListSpools(dir) {
 		st, err := os.Stat(file)
 		if err == nil && time.Since(st.ModTime()) > time.Duration(days)*24*time.Hour && isCompiled(file) {
 			os.Remove(file)

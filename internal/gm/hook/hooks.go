@@ -1,13 +1,19 @@
-package gm
+// Package hook is what the agents' hooks run: it turns Claude Code and Copilot events into session pages, briefs a new
+// session from what is stored, recalls memories for a prompt and saves "remember that ..." lines. It never fails the
+// agent: errors are logged and the exit code stays 0.
+package hook
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/Rickedb/git-memory/internal/gm/core"
 )
 
 // hookEvent is the agent-independent name of what happened.
@@ -73,18 +79,18 @@ func coalesce(vals ...any) any {
 }
 
 // asObject reads a tool payload part that may arrive as an object or as a JSON string.
-func asObject(v any) obj {
+func asObject(v any) core.Obj {
 	switch x := v.(type) {
 	case string:
 		var parsed any
 		if err := json.Unmarshal([]byte(x), &parsed); err != nil {
-			return obj{"raw": x}
+			return core.Obj{"raw": x}
 		}
 		return asObject(parsed)
 	case map[string]any:
 		return x
 	}
-	return obj{}
+	return core.Obj{}
 }
 
 var (
@@ -102,11 +108,11 @@ func relFile(root string, p any) string {
 	if !filepath.IsAbs(s) {
 		abs = filepath.Join(root, s)
 	}
-	rel, err := relPath(root, abs)
+	rel, err := core.RelPath(root, abs)
 	if err != nil {
 		return ""
 	}
-	rel = slash(rel)
+	rel = core.Slash(rel)
 	if strings.HasPrefix(rel, "..") {
 		return ""
 	}
@@ -114,7 +120,7 @@ func relFile(root string, p any) string {
 }
 
 // summarizeTool reduces an agent-specific tool call to what is worth remembering. Tool output is never stored.
-func summarizeTool(payload HookPayload, root string, cfg Config) *Event {
+func summarizeTool(payload core.HookPayload, root string, cfg core.Config) *core.Event {
 	tool := ""
 	if v := pick(payload, "tool_name", "toolName"); v != nil {
 		tool, _ = v.(string)
@@ -129,7 +135,7 @@ func summarizeTool(payload HookPayload, root string, cfg Config) *Event {
 		if command == "" {
 			return nil
 		}
-		return &Event{Ev: "tool", Tool: tool, Command: clean(command, 300), Failed: failed}
+		return &core.Event{Ev: "tool", Tool: tool, Command: core.Clean(command, 300), Failed: failed}
 	}
 	if editTool.MatchString(tool) {
 		cands := []any{pick(input, "file_path", "filePath", "path", "file", "notebook_path")}
@@ -141,14 +147,14 @@ func summarizeTool(payload HookPayload, root string, cfg Config) *Event {
 		var files []string
 		for _, c := range cands {
 			f := relFile(root, c)
-			if f != "" && !contains(files, f) && !isExcluded(f, cfg.Capture.Exclude) {
+			if f != "" && !core.Contains(files, f) && !core.IsExcluded(f, cfg.Capture.Exclude) {
 				files = append(files, f)
 			}
 		}
 		if len(files) == 0 {
 			return nil
 		}
-		return &Event{Ev: "tool", Tool: tool, Files: files, Failed: failed}
+		return &core.Event{Ev: "tool", Tool: tool, Files: files, Failed: failed}
 	}
 	return nil
 }
@@ -173,7 +179,7 @@ func textOf(c any) string {
 }
 
 // lastAssistantText is the agent's final message: sent in the payload, or read from the tail of the transcript.
-func lastAssistantText(payload HookPayload) string {
+func lastAssistantText(payload core.HookPayload) string {
 	if direct := pickStr(payload, "last_assistant_message", "lastAssistantMessage", "response"); strings.TrimSpace(direct) != "" {
 		return direct
 	}
@@ -246,20 +252,20 @@ func contextOutput(agent string, ev hookEvent, text string) *hookOutput {
 }
 
 func currentGit(root string) (branch, head string) {
-	branch, _ = gitTry(root, "rev-parse", "--abbrev-ref", "HEAD")
-	head, _ = gitTry(root, "rev-parse", "--short", "HEAD")
+	branch, _ = core.GitTry(root, "rev-parse", "--abbrev-ref", "HEAD")
+	head, _ = core.GitTry(root, "rev-parse", "--short", "HEAD")
 	return
 }
 
 // saveTriggers stores the memories a user asked for in their prompt ("remember that …"). A failure never reaches the agent.
-func saveTriggers(p *Project, cfg Config, source, prompt string) (saved []string) {
-	if err := catchAll(func() {
+func saveTriggers(p *core.Project, cfg core.Config, source, prompt string) (saved []string) {
+	if err := core.CatchAll(func() {
 		found := triggersIn(prompt)
 		if len(found) > cfg.MaxAutoPerPrompt {
 			found = found[:cfg.MaxAutoPerPrompt]
 		}
 		for _, c := range found {
-			saved = append(saved, p.remember(rememberInput{Text: c.Text, Kind: c.Kind, Title: c.Title, Tags: []string{"auto", "prompt"}, Extra: [][2]string{{"source", source}}}))
+			saved = append(saved, p.Remember(core.RememberInput{Text: c.Text, Kind: c.Kind, Title: c.Title, Tags: []string{"auto", "prompt"}, Extra: [][2]string{{"source", source}}}))
 		}
 	}); err != nil {
 		logError(p.Root, err)
@@ -270,10 +276,10 @@ func saveTriggers(p *Project, cfg Config, source, prompt string) (saved []string
 var unsafeSid = regexp.MustCompile(`[^\w.-]`)
 
 // launcherCLI is how the project's own files (briefing, slash commands) name the CLI: the launcher `agent init` writes.
-func launcherCLI() string { return "./.git/git-memory/" + wrapperName() }
+func launcherCLI() string { return "./.git/git-memory/" + core.WrapperName() }
 
 // handleHook is the single entry point for every agent/event pair. It returns the hook's stdout object, or nil.
-func handleHook(agent, rawEvent string, payload HookPayload) *hookOutput {
+func handleHook(agent, rawEvent string, payload core.HookPayload) *hookOutput {
 	if rawEvent == "" {
 		rawEvent = pickStr(payload, "hook_event_name", "hookEventName")
 	}
@@ -286,8 +292,8 @@ func handleHook(agent, rawEvent string, payload HookPayload) *hookOutput {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
-	p := openProject(cwd)
-	cfg := defaultConfig()
+	p := core.OpenProject(cwd)
+	cfg := core.DefaultConfig()
 	sid := "unknown"
 	if v := pick(payload, "session_id", "sessionId"); v != nil {
 		sid = unsafeSid.ReplaceAllString(toString(v), "_")
@@ -297,32 +303,32 @@ func handleHook(agent, rawEvent string, payload HookPayload) *hookOutput {
 	switch ev {
 	case evStart:
 		branch, head := currentGit(p.Root)
-		appendEvent(p.Spool, agent, sid, Event{Ev: "start", Source: pickStr(payload, "source"), Branch: branch, Head: head})
-		if initial := stripHarnessContext(pickStr(payload, "initial_prompt", "initialPrompt")); initial != "" {
-			appendEvent(p.Spool, agent, sid, Event{Ev: "prompt", Text: clean(initial, cfg.Capture.MaxPromptChars)})
+		appendEvent(p.Spool, agent, sid, core.Event{Ev: "start", Source: pickStr(payload, "source"), Branch: branch, Head: head})
+		if initial := core.StripHarnessContext(pickStr(payload, "initial_prompt", "initialPrompt")); initial != "" {
+			appendEvent(p.Spool, agent, sid, core.Event{Ev: "prompt", Text: core.Clean(initial, cfg.Capture.MaxPromptChars)})
 		}
-		ensureMemoryRepo(p.Mem)
-		withLock(p.Mem, func() {
+		core.RequireMemoryRepo(p.Mem)
+		core.WithLock(p.Mem, func() {
 			if flushStale(p, file) > 0 {
-				commitPaths(p.Mem, "memory: finalize earlier sessions", p.DirRel())
+				core.CommitPaths(p.Mem, "memory: finalize earlier sessions", p.DirRel())
 			}
 		})
 		purgeOld(p.Spool, 14)
-		return contextOutput(agent, ev, buildBriefing(listProjectPages(p), cfg, p.DirRel(), launcherCLI()))
+		return contextOutput(agent, ev, buildBriefing(core.ListProjectPages(p), cfg, p.DirRel(), launcherCLI()))
 
 	case evPrompt:
-		text := stripHarnessContext(pickStr(payload, "prompt"))
+		text := core.StripHarnessContext(pickStr(payload, "prompt"))
 		if text == "" {
 			return nil // the prompt was only editor context
 		}
-		appendEvent(p.Spool, agent, sid, Event{Ev: "prompt", Text: clean(text, cfg.Capture.MaxPromptChars)})
+		appendEvent(p.Spool, agent, sid, core.Event{Ev: "prompt", Text: core.Clean(text, cfg.Capture.MaxPromptChars)})
 		saved := saveTriggers(p, cfg, agent+":"+sid, text)
 		if agent != "claude" {
 			return nil
 		}
 		// what this very prompt just saved is not "related memory": the agent was only told to remember it
-		pages := filterPages(listProjectPages(p), func(pg *Page) bool { return !contains(saved, pg.Repo) })
-		return contextOutput(agent, ev, buildRecall(pages, cfg, clean(text, 600)))
+		pages := filterPages(core.ListProjectPages(p), func(pg *core.Page) bool { return !core.Contains(saved, pg.Repo) })
+		return contextOutput(agent, ev, buildRecall(pages, cfg, core.Clean(text, 600)))
 
 	case evTool, evToolFail:
 		if e := summarizeTool(payload, p.Root, cfg); e != nil {
@@ -334,13 +340,13 @@ func handleHook(agent, rawEvent string, payload HookPayload) *hookOutput {
 		return nil
 
 	case evStop:
-		last := clean(lastAssistantText(payload), cfg.Capture.MaxOutcomeChars)
-		appendEvent(p.Spool, agent, sid, Event{Ev: "stop", Last: last})
-		ensureMemoryRepo(p.Mem)
-		withLock(p.Mem, func() {
+		last := core.Clean(lastAssistantText(payload), cfg.Capture.MaxOutcomeChars)
+		appendEvent(p.Spool, agent, sid, core.Event{Ev: "stop", Last: last})
+		core.RequireMemoryRepo(p.Mem)
+		core.WithLock(p.Mem, func() {
 			writeSessionPage(p, file)
-			if lastCommitAgeSec(p.Mem, p.DirRel()) >= int64(cfg.DebounceCommitSec) {
-				commitPaths(p.Mem, "memory: session "+runeSlice(sid, 8)+" ("+agent+")", p.DirRel())
+			if core.LastCommitAgeSec(p.Mem, p.DirRel()) >= int64(cfg.DebounceCommitSec) {
+				core.CommitPaths(p.Mem, "memory: session "+core.RuneSlice(sid, 8)+" ("+agent+")", p.DirRel())
 			}
 		})
 		return nil
@@ -350,11 +356,11 @@ func handleHook(agent, rawEvent string, payload HookPayload) *hookOutput {
 		if ev == evEnd {
 			name = "end"
 		}
-		appendEvent(p.Spool, agent, sid, Event{Ev: name, Reason: pickStr(payload, "reason", "trigger")})
-		ensureMemoryRepo(p.Mem)
-		withLock(p.Mem, func() {
+		appendEvent(p.Spool, agent, sid, core.Event{Ev: name, Reason: pickStr(payload, "reason", "trigger")})
+		core.RequireMemoryRepo(p.Mem)
+		core.WithLock(p.Mem, func() {
 			writeSessionPage(p, file)
-			commitPaths(p.Mem, "memory: session "+runeSlice(sid, 8)+" ("+agent+")", p.DirRel())
+			core.CommitPaths(p.Mem, "memory: session "+core.RuneSlice(sid, 8)+" ("+agent+")", p.DirRel())
 		})
 		return nil
 	}
@@ -371,13 +377,55 @@ func toString(v any) string {
 
 // logError appends to the project's .git/git-memory/errors.log; outside a repo there is nothing sensible to do.
 func logError(cwd string, err error) {
-	_ = catchAll(func() {
-		base := locate(cwd)
-		mkdirAll(base.Data)
+	_ = core.CatchAll(func() {
+		base := core.Locate(cwd)
+		core.MkdirAll(base.Data)
 		f, ferr := os.OpenFile(filepath.Join(base.Data, "errors.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		check(ferr)
+		core.Check(ferr)
 		defer f.Close()
-		_, werr := f.WriteString(iso(time.Now()) + " " + err.Error() + "\n")
-		check(werr)
+		_, werr := f.WriteString(core.Iso(time.Now()) + " " + err.Error() + "\n")
+		core.Check(werr)
 	})
+}
+
+// ---- the entry point ----------------------------------------------------------------------------------------------
+
+func isTTY(f *os.File) bool {
+	st, err := f.Stat()
+	return err != nil || st.Mode()&os.ModeCharDevice != 0
+}
+
+func readStdinJSON() core.HookPayload {
+	if isTTY(os.Stdin) {
+		return core.HookPayload{}
+	}
+	raw, err := io.ReadAll(os.Stdin)
+	if err != nil || strings.TrimSpace(string(raw)) == "" {
+		return core.HookPayload{}
+	}
+	var p core.HookPayload
+	if json.Unmarshal(raw, &p) != nil || p == nil {
+		return core.HookPayload{}
+	}
+	return p
+}
+
+func Run(agent, event string) {
+	payload := readStdinJSON()
+	err := core.CatchAll(func() {
+		if agent != "claude" && agent != "copilot" {
+			core.Fail(`unknown agent "%s"`, agent)
+		}
+		if o := handleHook(agent, event, payload); o != nil {
+			fmt.Println(core.MarshalJSON(o, false))
+		}
+	})
+	if err != nil {
+		// Hooks must never break the agent: log and exit cleanly.
+		cwd := pickStr(payload, "cwd")
+		if cwd == "" {
+			cwd, _ = os.Getwd()
+		}
+		logError(cwd, err)
+	}
 }

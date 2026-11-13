@@ -1,4 +1,4 @@
-package gm
+package core
 
 import (
 	"os"
@@ -11,13 +11,13 @@ import (
 
 var (
 	frontmatter = regexp.MustCompile(`(?s)^---\n(.*?)\n---\n?(.*)$`)
-	titleLine   = regexp.MustCompile(`(?m)^#\s+(.+)$`)
+	TitleLine   = regexp.MustCompile(`(?m)^#\s+(.+)$`)
 	leadTitle   = regexp.MustCompile(`^\s*#\s+.+\n?`)
 	headingLine = regexp.MustCompile(`(?m)^# .+$`)
 )
 
-func parsePage(text, rel, scope string) *Page {
-	meta := newMeta()
+func ParsePage(text, rel, scope string) *Page {
+	meta := NewMeta()
 	body := text
 	if m := frontmatter.FindStringSubmatch(text); m != nil {
 		body = m[2]
@@ -42,7 +42,7 @@ func parsePage(text, rel, scope string) *Page {
 		}
 	}
 	title := strings.TrimSuffix(filepath.Base(rel), ".md")
-	if m := titleLine.FindStringSubmatch(body); m != nil {
+	if m := TitleLine.FindStringSubmatch(body); m != nil {
 		title = m[1]
 	}
 	p := &Page{
@@ -61,7 +61,7 @@ func parsePage(text, rel, scope string) *Page {
 	return p
 }
 
-func serializePage(meta *Meta, body string) string {
+func SerializePage(meta *Meta, body string) string {
 	lines := []string{"---"}
 	for _, k := range meta.keys {
 		v := meta.vals[k]
@@ -75,7 +75,7 @@ func serializePage(meta *Meta, body string) string {
 	return strings.Join(lines, "\n")
 }
 
-func listPages(wt, scope string) []*Page {
+func ListPages(wt, scope string) []*Page {
 	var out []*Page
 	var walk func(dir string)
 	walk = func(dir string) {
@@ -92,24 +92,24 @@ func listPages(wt, scope string) []*Page {
 				walk(full)
 			} else if strings.HasSuffix(e.Name(), ".md") {
 				rel, _ := filepath.Rel(wt, full)
-				rel = slash(rel)
+				rel = Slash(rel)
 				if rel == "README.md" {
 					continue
 				}
-				if text, ok := readFileTry(full); ok {
-					out = append(out, parsePage(text, rel, scope))
+				if text, ok := ReadFileTry(full); ok {
+					out = append(out, ParsePage(text, rel, scope))
 				}
 			}
 		}
 	}
-	if exists(wt) {
+	if Exists(wt) {
 		walk(wt)
 	}
 	return out
 }
 
 // sectionOf is the text under `## heading` up to the next `## ` heading.
-func sectionOf(body, heading string) string {
+func SectionOf(body, heading string) string {
 	head := regexp.MustCompile(`^##\s+` + regexp.QuoteMeta(heading) + `\s*$`)
 	next := regexp.MustCompile(`^##\s`)
 	var out []string
@@ -127,7 +127,7 @@ func sectionOf(body, heading string) string {
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
-func pageTime(p *Page) int64 {
+func PageTime(p *Page) int64 {
 	s := p.Meta.Updated()
 	if s == "" {
 		return 0
@@ -141,13 +141,13 @@ func pageTime(p *Page) int64 {
 }
 
 // pageRef is how a page is referred to: its path in the memory repository, e.g. projects/shop/memories/decision/use-pnpm.md.
-func pageRef(p *Page) string { return p.Repo }
+func PageRef(p *Page) string { return p.Repo }
 
 // listProjectPages reads the pages that apply to the project: its own folder and the global one.
-func listProjectPages(p *Project) []*Page {
+func ListProjectPages(p *Project) []*Page {
 	var out []*Page
-	for _, d := range []struct{ dir, scope, rel string }{{p.Dir(), "project", p.DirRel()}, {p.GlobalDir(), "global", globalRel}} {
-		for _, pg := range listPages(d.dir, d.scope) {
+	for _, d := range []struct{ dir, scope, rel string }{{p.Dir(), "project", p.DirRel()}, {p.GlobalDir(), "global", GlobalRel}} {
+		for _, pg := range ListPages(d.dir, d.scope) {
 			pg.Repo = d.rel + "/" + pg.Path
 			out = append(out, pg)
 		}
@@ -155,13 +155,13 @@ func listProjectPages(p *Project) []*Page {
 	return out
 }
 
-func isActive(p *Page) bool { return p.Status == "active" }
+func IsActive(p *Page) bool { return p.Status == "active" }
 
 // withoutTitle is the page body without its leading `# Title` line (the title is shown separately).
-func withoutTitle(body string) string {
+func WithoutTitle(body string) string {
 	return strings.TrimSpace(leadTitle.ReplaceAllString(body, ""))
 }
 
-func sortPagesNewest(pages []*Page) {
-	sort.SliceStable(pages, func(i, j int) bool { return pageTime(pages[i]) > pageTime(pages[j]) })
+func SortPagesNewest(pages []*Page) {
+	sort.SliceStable(pages, func(i, j int) bool { return PageTime(pages[i]) > PageTime(pages[j]) })
 }

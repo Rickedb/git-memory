@@ -16,6 +16,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/Rickedb/git-memory/internal/gm/core"
 )
 
 var binPath string // the built git-memory
@@ -48,7 +50,8 @@ func TestMain(m *testing.M) {
 type env struct {
 	t     *testing.T
 	tmp   string   // every directory of the test lives here
-	home  string   // the memory repository of the "machine" currently running commands: <its home>/.git-memory
+	home  string   // the memory repository of the project most recently made by newRepo: <project>/.git-memory
+	user  string   // the home directory of the "machine" currently running commands
 	extra []string // more environment for every command
 	n     int
 }
@@ -63,7 +66,7 @@ func realpath(p string) string {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	e := &env{t: t, tmp: realpath(t.TempDir())}
-	e.home = filepath.Join(e.mkdir("user"), ".git-memory") // does not exist yet: created on first use
+	e.user = e.mkdir("user")
 	return e
 }
 
@@ -84,7 +87,7 @@ func (e *env) run(dir, name string, args ...string) (string, string, int) {
 func (e *env) runIn(dir, input, name string, args ...string) (string, string, int) {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	userHome := filepath.Dir(e.home) // the memory repository is ~/.git-memory: the home directory is the only thing that locates it
+	userHome := e.user
 	cmd.Env = append(os.Environ(), "HOME="+userHome, "USERPROFILE="+userHome, "XDG_CONFIG_HOME="+filepath.Join(userHome, ".config"), "GIT_CONFIG_NOSYSTEM=1", "CLAUDE_CONFIG_DIR=",
 		"GIT_TERMINAL_PROMPT=0", "GIT_AUTHOR_NAME=T", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=T", "GIT_COMMITTER_EMAIL=t@example.com")
 	cmd.Env = append(cmd.Env, e.extra...)
@@ -139,7 +142,7 @@ func (e *env) agentInit(dir string, args ...string) string {
 	return e.sh(dir, binPath, append([]string{"agent", "init"}, args...)...)
 }
 
-func launcher(dir string) string { return filepath.Join(dir, ".git", "git-memory", wrapperName()) }
+func launcher(dir string) string { return filepath.Join(dir, ".git", "git-memory", core.WrapperName()) }
 
 func (e *env) hookRaw(dir, agent, event string, payload map[string]any) string {
 	e.t.Helper()
@@ -177,7 +180,16 @@ func (e *env) newProject(name string) string {
 	return dir
 }
 
+// newRepo is a project whose user ran `git-memory init` in it: it has its own .git-memory.
 func (e *env) newRepo(name string) string {
+	e.t.Helper()
+	dir := e.newRepoNoMemory(name)
+	e.sh(dir, binPath, "init", "-q")
+	e.home = filepath.Join(dir, ".git-memory")
+	return dir
+}
+
+func (e *env) newRepoNoMemory(name string) string {
 	e.t.Helper()
 	dir := e.mkdir("gm-" + name)
 	e.git(dir, "init", "-q", "-b", "main")
@@ -223,11 +235,11 @@ func (e *env) readJSON(p string) map[string]any {
 	return m
 }
 
-// withMachine runs fn as another machine: another home directory, so another ~/.git-memory.
+// withMachine runs fn as another machine: another home directory and its own projects.
 func (e *env) withMachine(fn func()) {
-	prev := e.home
-	e.home = filepath.Join(e.mkdir("machine"), ".git-memory")
-	defer func() { e.home = prev }()
+	prevHome, prevUser := e.home, e.user
+	e.user = e.mkdir("machine")
+	defer func() { e.home, e.user = prevHome, prevUser }()
 	fn()
 }
 
@@ -359,11 +371,19 @@ func ctxOf(out map[string]any) string {
 
 func TestEveryCommandIsGitInTheMemoryRepository(t *testing.T) {
 	e := newEnv(t)
-	elsewhere := e.newRepo("elsewhere") // a project: its own repository must not be touched
+	elsewhere := e.newRepoNoMemory("elsewhere") // a project: its own repository must not be touched
+	e.home = filepath.Join(elsewhere, ".git-memory")
 
-	e.ok(!e.exists(e.home), "the memory repository exists before first use")
-	e.has(e.gm(elsewhere, "status"), "No commits yet") // created on first use, from any directory
-	e.ok(e.exists(filepath.Join(e.home, ".git")), "not created on first use")
+	// nothing makes a memory repository but init: not a git-memory command, not a hook
+	_, errOut0, code0 := e.gmRaw(elsewhere, "status")
+	e.eq(code0, 1)
+	e.has(errOut0, "no memory repository at "+e.home+": run `git-memory init`")
+	e.ok(!e.exists(e.home), "a command created the memory repository")
+	e.has(e.gm(elsewhere, "init"), "Initialized empty Git repository")
+	e.has(e.gm(elsewhere, "status"), "No commits yet")
+	e.eq(e.status(elsewhere), "", "the .git-memory folder stays out of the project's git status")
+	e.ok(!e.exists(filepath.Join(elsewhere, ".gitignore")), ".gitignore touched")
+	e.eq(strings.TrimSpace(e.git(e.home, "symbolic-ref", "--short", "HEAD")), "main")
 
 	e.write(filepath.Join(e.home, "note.md"), "# a note\n")
 	e.gm(elsewhere, "add", ".")
@@ -395,7 +415,6 @@ func TestEveryCommandIsGitInTheMemoryRepository(t *testing.T) {
 func TestStdinFlagsAndGlobalOptionsReachGit(t *testing.T) {
 	e := newEnv(t)
 	dir := e.newRepo("flags")
-	e.gm(dir, "status") // creates the repository
 
 	// stdin is git's stdin
 	out, _, code := e.runIn(dir, "hello\n", binPath, "hash-object", "--stdin")
@@ -423,7 +442,7 @@ func TestStdinFlagsAndGlobalOptionsReachGit(t *testing.T) {
 
 func TestCloneUsesAnExistingMemoryRepository(t *testing.T) {
 	e := newEnv(t)
-	dir := e.newRepo("c")
+	dir := e.newRepoNoMemory("c")
 	remote := e.bare()
 	seed := e.newRepo("seed")
 	e.write(filepath.Join(seed, "global/memories/fact/a.md"), "---\nkind: fact\n---\n\n# A fact\n\nThe API listens on 8080.\n")
@@ -431,9 +450,11 @@ func TestCloneUsesAnExistingMemoryRepository(t *testing.T) {
 	e.git(seed, "commit", "-qm", "seed")
 	e.git(seed, "push", "-q", remote, "main")
 
-	e.gm(dir, "clone", "-q", remote)
+	e.gm(dir, "clone", "-q", remote) // into ./.git-memory, the folder you are in
+	e.home = filepath.Join(dir, ".git-memory")
 	e.has(e.gm(dir, "log", "--format=%s"), "seed")
 	e.ok(e.exists(filepath.Join(e.home, "global/memories/fact/a.md")), "not cloned into the memory repository")
+	e.eq(e.status(dir), "", "the clone stays out of the project's git status")
 
 	// a second clone must not trample what is there
 	_, errOut, code := e.gmRaw(dir, "clone", "-q", remote)
@@ -444,15 +465,16 @@ func TestCloneUsesAnExistingMemoryRepository(t *testing.T) {
 
 func TestFolderThatIsNotARepositoryIsNeverInitialisedByAccident(t *testing.T) {
 	e := newEnv(t)
-	dir := e.newRepo("n")
+	dir := e.newRepoNoMemory("n")
+	e.home = filepath.Join(dir, ".git-memory")
 	e.write(filepath.Join(e.home, "old/config.json"), "{}")
 
 	_, errOut, code := e.gmRaw(dir, "log")
 	e.eq(code, 1)
-	e.has(errOut, "is not empty and is not a git repository")
+	e.has(errOut, "is not a git repository")
 	e.ok(!e.exists(filepath.Join(e.home, ".git")), "initialised over somebody's files")
 
-	e.gm(dir, "init", "-q", "-b", "main") // the explicit way
+	e.gm(dir, "init", "-q") // the explicit way
 	e.ok(e.exists(filepath.Join(e.home, ".git")), "init did not initialise it")
 	e.has(e.gm(dir, "status", "--short"), "old/")
 }
@@ -467,8 +489,9 @@ func TestSyncingAndSharingIsPlainGit(t *testing.T) {
 	e.gm(a, "push", "-q", "-u", "origin", "main")
 
 	e.withMachine(func() { // another machine of the same person
-		b := e.newRepo("b")
+		b := e.newRepoNoMemory("b")
 		e.gm(b, "clone", "-q", remote)
+		e.home = filepath.Join(b, ".git-memory")
 		e.has(e.gm(b, "ls-files"), "global/memories/decision/pnpm.md")
 		e.commitPage(b, "global/memories/fact/port.md", "---\nkind: fact\n---\n\n# Port\n\n8080.\n")
 		e.gm(b, "push", "-q")
@@ -501,8 +524,8 @@ func TestOurOwnCommandsNeverShadowGit(t *testing.T) {
 	out, _, code := e.gmRaw(dir, "version")
 	e.eq(code, 0)
 	e.match(out, `^git version `, "`git-memory version` must be git's own")
-	e.gm(dir, "init", "-q") // creates the memory repository, as `git init` would
-	e.ok(e.exists(filepath.Join(e.home, ".git")), "init is git's")
+	e.gm(dir, "init", "-q") // creates the memory repository, as `git init` would: here
+	e.ok(e.exists(filepath.Join(dir, ".git-memory/.git")), "init is git's")
 }
 
 // ---- wiring a project ---------------------------------------------------------------------------------------------
@@ -535,13 +558,14 @@ func TestAgentInitAddsNothingToTheProject(t *testing.T) {
 func TestDoctorReportsVersionAndHealth(t *testing.T) {
 	e := newEnv(t)
 	e.skipOnWindows()
-	dir := e.newRepo("Shop App")
+	dir := e.newRepoNoMemory("Shop App")
+	e.home = filepath.Join(dir, ".git-memory")
 
 	// before anything exists: the version, a memory repository that is not there yet, a project that is not wired
 	stdout, _, code := e.gmRaw(dir, "doctor")
 	e.eq(code, 0)
 	e.match(stdout, `^git-memory 0\.0\.1 · git version \d`, "the first line is the version")
-	e.has(stdout, "· Memory repository: "+e.home+" (not created yet")
+	e.has(stdout, "! Memory repository: none at "+e.home+": run git-memory init")
 	e.has(stdout, "! Claude Code hooks: not installed")
 	e.has(stdout, "! Copilot hooks: not installed")
 	e.has(stdout, "· Slash commands: not installed")
@@ -557,7 +581,7 @@ func TestDoctorReportsVersionAndHealth(t *testing.T) {
 	e.eq(strings.HasPrefix(rows["Global folder"], "global"), true)
 	e.has(out, "✓ Claude Code hooks: 7 events")
 	e.has(out, "✓ Copilot hooks: 6 events")
-	e.has(out, "✓ Slash commands: Claude Code 6/6, Copilot 6/6")
+	e.has(out, "✓ Slash commands: Claude Code 7/7, Copilot 7/7")
 	e.match(out, `✓ Hook launcher: \.git/git-memory/gm`)
 	e.match(out, `✓ Binary used by hooks: .*git-memory`)
 	e.has(out, "· Agent activity: no hook events yet")
@@ -586,12 +610,11 @@ func TestDoctorReportsVersionAndHealth(t *testing.T) {
 	e.eq(code, 0, "--report always exits 0")
 
 	// a memory "repository" that is somebody's folder is reported, and left alone
-	e.withMachine(func() {
-		e.write(filepath.Join(e.home, "precious.txt"), "x")
-		stdout, _, code := e.gmRaw(dir, "doctor")
-		e.eq(code, 1)
-		e.has(stdout, "✗ Memory repository: "+e.home+" exists, is not empty and is not a git repository")
-	})
+	bad := e.newRepoNoMemory("bad")
+	e.write(filepath.Join(bad, ".git-memory/precious.txt"), "x")
+	stdout, _, code = e.gmRaw(bad, "doctor")
+	e.eq(code, 1)
+	e.has(stdout, "✗ Memory repository: "+filepath.Join(bad, ".git-memory")+" exists, is not empty and is not a git repository")
 
 	// outside any project it still reports the repository, and says so
 	outside := e.mkdir("outside")
@@ -608,8 +631,8 @@ func TestNoEnvironmentVariableChangesWhereTheMemoryLives(t *testing.T) {
 	elsewhere := e.mkdir("elsewhere")
 	e.extra = []string{"GIT_MEMORY_HOME=" + elsewhere, "GIT_MEMORY_DISABLE=1", "GIT_MEMORY_DIR=" + elsewhere}
 
-	e.gm(dir, "status") // creates the repository
-	e.ok(e.exists(filepath.Join(e.home, ".git")), "the repository must be ~/.git-memory")
+	e.gm(dir, "status")
+	e.ok(e.exists(filepath.Join(e.home, ".git")), "the repository must be ./.git-memory")
 	e.ok(!e.exists(filepath.Join(elsewhere, ".git")), "GIT_MEMORY_HOME must not be honoured")
 
 	// and the off switch is gone with it: the hooks still work
@@ -634,10 +657,10 @@ func TestAgentInitKeepsTheUsersOwnHooksAndMigratesOldOnes(t *testing.T) {
 	file := filepath.Join(dir, ".claude/settings.local.json")
 	s := e.readJSON(file)
 	stop := at(s, "hooks", "Stop").([]any)
-	old := obj{"hooks": []any{obj{"type": "command", "command": `"$CLAUDE_PROJECT_DIR/.git/git-memory/gm" hook claude Stop`}}} // the form earlier builds wrote
-	s["hooks"].(map[string]any)["Stop"] = append(stop, obj{"hooks": []any{obj{"type": "command", "command": "echo mine"}}}, old)
-	s["permissions"] = obj{"allow": []any{"Bash(ls)"}}
-	e.write(file, marshalJSON(s, true))
+	old := core.Obj{"hooks": []any{core.Obj{"type": "command", "command": `"$CLAUDE_PROJECT_DIR/.git/git-memory/gm" hook claude Stop`}}} // the form earlier builds wrote
+	s["hooks"].(map[string]any)["Stop"] = append(stop, core.Obj{"hooks": []any{core.Obj{"type": "command", "command": "echo mine"}}}, old)
+	s["permissions"] = core.Obj{"allow": []any{"Bash(ls)"}}
+	e.write(file, core.MarshalJSON(s, true))
 
 	e.agentInit(dir)
 	after := e.readJSON(file)
@@ -760,7 +783,7 @@ func TestSessionPageStripsEditorContextAndEmptySessionsLeaveNothing(t *testing.T
 func TestBriefingReadsTheProjectAndGlobalFoldersOnly(t *testing.T) {
 	e := newEnv(t)
 	e.skipOnWindows()
-	a, b := e.newProject("brief-a"), e.newProject("brief-b")
+	a := e.newProject("brief-a")
 	pa := e.project(a)
 	page := func(title, body string) string {
 		return "---\nkind: decision\ntier: semantic\ntags: []\n---\n\n# " + title + "\n\n" + body + "\n"
@@ -774,14 +797,16 @@ func TestBriefingReadsTheProjectAndGlobalFoldersOnly(t *testing.T) {
 	e.has(bf, "git run inside it", "the briefing tells the agent what the CLI is")
 	e.has(bf, "./.git/git-memory/gm grep")
 
-	other := ctxOf(e.hook(b, "claude", "SessionStart", map[string]any{"session_id": "bb1bb1bb1"}))
-	e.has(other, "Use pnpm {global}", "global applies to every project")
-	e.lacks(other, "Strict TS", "another project's memories")
+	// a memory repository that holds other projects too (a cloned team repository): their pages are not this project's
+	e.commitPage(a, "projects/someone-elses-app/memories/decision/theirs.md", page("Their rule", "Belongs to another project."))
+	again := ctxOf(e.hook(a, "claude", "SessionStart", map[string]any{"session_id": "bb1bb1bb1"}))
+	e.has(again, "Use pnpm {global}", "global applies to every project")
+	e.lacks(again, "Their rule", "another project's memories")
 
 	// moving a page between the folders is a plain git mv
 	e.gm(a, "mv", pa+"/memories/decision/strict-ts.md", "global/memories/decision/strict-ts.md")
 	e.gm(a, "commit", "-q", "-m", "promote", "--", pa+"/memories", "global/memories")
-	e.has(ctxOf(e.hook(b, "claude", "SessionStart", map[string]any{"session_id": "bb2bb2bb2"})), "Strict TS {global}")
+	e.has(ctxOf(e.hook(a, "claude", "SessionStart", map[string]any{"session_id": "bb2bb2bb2"})), "Strict TS {global}")
 }
 
 func TestPinnedPagesComeFirstAndSupersededOnesLeave(t *testing.T) {
@@ -877,9 +902,10 @@ func TestABrokenMemoryRepositoryNeverBreaksTheHook(t *testing.T) {
 
 	// the memory repository is somebody's non-repo folder: agent init leaves it alone (and says so), and a hook logs and
 	// exits cleanly while still recording the prompt
-	e.withMachine(func() {
+	{
+		broken := e.newRepoNoMemory("broken")
+		e.home = filepath.Join(broken, ".git-memory")
 		e.write(filepath.Join(e.home, "precious.txt"), "do not touch")
-		broken := e.newRepo("broken")
 		out := e.agentInit(broken)
 		e.has(out, "is not empty and is not a git repository")
 		hookOut := e.hookRaw(broken, "claude", "UserPromptSubmit", map[string]any{"session_id": "of2of2of2", "prompt": "remember that the folder is not a repository"})
@@ -888,7 +914,7 @@ func TestABrokenMemoryRepositoryNeverBreaksTheHook(t *testing.T) {
 		e.has(e.read(filepath.Join(broken, ".git/git-memory/spool/claude-of2of2of2.jsonl")), "the folder is not a repository", "the session still recorded the prompt")
 		e.eq(e.read(filepath.Join(e.home, "precious.txt")), "do not touch")
 		e.ok(!e.exists(filepath.Join(e.home, ".git")), "the folder was initialised behind the user's back")
-	})
+	}
 }
 
 // The hooks commit only their own folder: whatever else the user has staged in the memory repository stays staged.
@@ -912,12 +938,12 @@ func TestHooksOnlyCommitTheirOwnFolder(t *testing.T) {
 // ---- slash commands -----------------------------------------------------------------------------------------------
 
 var (
-	commandNames = []string{"remember", "decide", "recall", "memories", "promote", "forget"}
+	commandNames = []string{"remember", "decide", "recall", "memories", "list", "promote", "forget"}
 	writerNames  = []string{"remember", "decide", "promote", "forget"}
 )
 
 // relCLI is how the (committable) command files refer to the CLI.
-func relCLI() string { return "./.git/git-memory/" + wrapperName() }
+func relCLI() string { return "./.git/git-memory/" + core.WrapperName() }
 
 func frontmatterOf(text string) map[string]string {
 	out := map[string]string{}
@@ -937,7 +963,7 @@ func TestAgentInitInstallsSlashCommands(t *testing.T) {
 	e.skipOnWindows()
 	dir := e.newRepo("cmds")
 	out := e.agentInit(dir)
-	e.has(out, "slash commands (Claude Code skills, Copilot prompt files; git-excluded): /remember /decide /recall /memories /promote /forget")
+	e.has(out, "slash commands (Claude Code skills, Copilot prompt files; git-excluded): /remember /decide /recall /memories /list /promote /forget")
 	e.eq(e.status(dir), "", "commands must be git-excluded")
 
 	for _, name := range commandNames {
@@ -947,7 +973,7 @@ func TestAgentInitInstallsSlashCommands(t *testing.T) {
 		e.ok(len(fm["description"]) > 20, name+" needs a description for the / menu")
 		e.eq(fm["allowed-tools"], "Bash("+relCLI()+" *)", "the CLI is pre-approved for the turn, by its project-relative path")
 		want := ""
-		if contains(writerNames, name) {
+		if core.Contains(writerNames, name) {
 			want = "true" // commands that write are user-only
 		}
 		e.eq(fm["disable-model-invocation"], want, name)
@@ -959,10 +985,14 @@ func TestAgentInitInstallsSlashCommands(t *testing.T) {
 		e.ok(len(pf["description"]) > 20, name+" prompt needs a description")
 		e.has(prompt, "`"+relCLI()+" ", "prompt files call the same relative launcher")
 	}
-	// /memories runs its read-only commands before the model sees the file (Claude Code `!` injection)
-	memories := e.read(filepath.Join(dir, ".claude/skills/memories/SKILL.md"))
-	e.match(memories, "(?m)^!`"+regexp.QuoteMeta(relCLI())+" doctor --report`")
-	e.match(memories, "(?m)^!`"+regexp.QuoteMeta(relCLI())+" log --oneline -n 10`")
+	// no `!` injection: Claude Code aborts the whole skill when an injected command fails (missing CLI, empty repository),
+	// so every command runs through the model, which can handle the failure.
+	for _, name := range commandNames {
+		e.lacks(e.read(filepath.Join(dir, ".claude/skills", name, "SKILL.md")), "!`", name+" must not use shell injection")
+		// and every command says what to do when the CLI is missing: offer the install, never just stop
+		e.has(e.read(filepath.Join(dir, ".claude/skills", name, "SKILL.md")), "install.sh", name+" must explain how to install")
+		e.has(e.read(filepath.Join(dir, ".github/prompts", name+".prompt.md")), "ask whether you should do it for them", name)
+	}
 	e.lacks(e.read(filepath.Join(dir, ".claude/skills/recall/SKILL.md")), "disable-model-invocation")
 	e.ok(!e.exists(filepath.Join(dir, ".claude/skills/memory")), "must not shadow the built-in /memory")
 
@@ -1016,7 +1046,7 @@ func TestEveryCommandLineInTheGeneratedFilesWorks(t *testing.T) {
 	for _, m := range regexp.MustCompile(regexp.QuoteMeta(relCLI())+` ([a-z-]+)`).FindAllStringSubmatch(bodies.String(), -1) {
 		sub := m[1]
 		seen[sub] = true
-		if contains(ownWords, sub) {
+		if core.Contains(ownWords, sub) {
 			continue
 		}
 		e.ok(regexp.MustCompile(`(?m)^\s+`+sub+`\s`).MatchString(gitCommands), "the generated commands use `"+sub+"`, which is not a git command")
@@ -1079,7 +1109,7 @@ func TestCommandFilesAreIdenticalOnEveryMachine(t *testing.T) {
 	}
 	fa, fb := files(a), files(b)
 	e.eq(len(fa), len(commandNames)*2+2)
-	e.eq(marshalJSON(fa, false), marshalJSON(fb, false), "generated files must not depend on where the project or the memory repository are")
+	e.eq(core.MarshalJSON(fa, false), core.MarshalJSON(fb, false), "generated files must not depend on where the project or the memory repository are")
 
 	home, _ := os.UserHomeDir()
 	personal := []string{a, b, home, e.tmp, filepath.Dir(binPath), homeA, homeB, "GIT_MEMORY_HOME"}
@@ -1092,7 +1122,7 @@ func TestCommandFilesAreIdenticalOnEveryMachine(t *testing.T) {
 	}
 	for _, rel := range []string{".claude/skills/recall/SKILL.md", ".github/prompts/recall.prompt.md"} {
 		e.has(fa[rel], relCLI(), rel+" should use the relative launcher")
-		e.has(fa[rel], "If that file does not exist")
+		e.has(fa[rel], "does not exist")
 	}
 	e.eq(at(e.readJSON(filepath.Join(a, ".claude/settings.local.json")), "hooks", "Stop", 0, "hooks", 0, "command"), `"$CLAUDE_PROJECT_DIR/.git/git-memory/gm" agent hook claude Stop`)
 	copilot := at(e.readJSON(filepath.Join(a, ".github/hooks/git-memory.json")), "hooks", "agentStop", 0)
@@ -1107,7 +1137,7 @@ func TestCommandFilesAreIdenticalOnEveryMachine(t *testing.T) {
 
 	// regenerating leaves them byte-identical, and committing them works: tracked files are unaffected by the local exclude
 	e.agentInit(a)
-	e.eq(marshalJSON(files(a), false), marshalJSON(fa, false))
+	e.eq(core.MarshalJSON(files(a), false), core.MarshalJSON(fa, false))
 	e.git(a, "add", "-f", ".claude/skills", ".github/prompts")
 	e.git(a, "commit", "-qm", "share the memory commands")
 	e.agentInit(a)
@@ -1116,17 +1146,20 @@ func TestCommandFilesAreIdenticalOnEveryMachine(t *testing.T) {
 
 // ---- the agents' own memories: doctor lists them, promote brings them in -------------------------------------------
 
+// testNonAlnum is how Claude Code turns a project path into the name of its memory folder.
+var testNonAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
+
 // claudeMemoryOf is where Claude Code keeps its auto memory for the project at root, on the test machine.
 func (e *env) claudeMemoryOf(root string) string {
-	return filepath.Join(filepath.Dir(e.home), ".claude", "projects", nonAlnum.ReplaceAllString(root, "-"), "memory")
+	return filepath.Join(e.user, ".claude", "projects", testNonAlnum.ReplaceAllString(root, "-"), "memory")
 }
 
 // copilotMemoryOf is where VS Code Copilot Chat keeps its memories: the user-level folder, and the one of the workspace
 // that is root (found through the workspace.json VS Code keeps beside it).
 func (e *env) copilotMemoryOf(root string) (user, workspace string) {
-	cfg := filepath.Join(filepath.Dir(e.home), ".config")
+	cfg := filepath.Join(e.user, ".config")
 	if runtime.GOOS == "darwin" {
-		cfg = filepath.Join(filepath.Dir(e.home), "Library", "Application Support")
+		cfg = filepath.Join(e.user, "Library", "Application Support")
 	}
 	userData := filepath.Join(cfg, "Code", "User")
 	user = filepath.Join(userData, "globalStorage", "github.copilot-chat", "memory-tool", "memories")
@@ -1318,11 +1351,10 @@ func TestDemoteNarrowsAGlobalPageToTheProject(t *testing.T) {
 	e.has(errOut, "is already in this project's folder: nothing is narrower than a project")
 
 	// another project's page is not ours to narrow
-	other := e.newProject("other")
-	e.commitPage(other, e.project(other)+"/memories/note/theirs.md", "# Theirs\n\nx\n")
+	e.commitPage(dir, "projects/other-app/memories/note/theirs.md", "# Theirs\n\nx\n")
 	_, errOut, code = e.gmRaw(dir, "demote", "theirs")
 	e.eq(code, 1)
-	e.has(errOut, "belongs to "+e.project(other)+": demote narrows global pages")
+	e.has(errOut, "belongs to projects/other-app: demote narrows global pages")
 
 	// a page that was never committed moves too; when the same name exists in both folders the global one is the target
 	e.write(filepath.Join(e.home, "global/memories/note/draft.md"), "# Draft\n\nnot committed\n")
@@ -1391,4 +1423,121 @@ func TestTheVersionIsZeroZeroOneUntilTheFirstRelease(t *testing.T) {
 	out, _, code := e.gmRaw(dir, "--version")
 	e.eq(code, 0)
 	e.match(out, `^git version `)
+}
+
+// The memory repository is the .git-memory folder of the folder you are in: nothing searches upwards, and nothing but
+// init (or clone, or agent init) makes one.
+func TestTheMemoryRepositoryIsTheFolderYouAreInAndNothingIsSearched(t *testing.T) {
+	e := newEnv(t)
+	dir := e.newRepo("here")
+	sub := filepath.Join(dir, "pkg", "deep")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// a subfolder of a project that has a memory repository does not have one
+	_, errOut, code := e.gmRaw(sub, "status")
+	e.eq(code, 1)
+	e.has(errOut, "no memory repository at "+filepath.Join(sub, ".git-memory"))
+	e.ok(!e.exists(filepath.Join(sub, ".git-memory")), "a command created a memory repository")
+
+	// and neither does a folder under a home directory that has one
+	e.git(e.user, "init", "-q", "-b", "main", filepath.Join(e.user, ".git-memory"))
+	outside := e.mkdir("outside")
+	_, errOut, code = e.gmRaw(outside, "log")
+	e.eq(code, 1)
+	e.has(errOut, "no memory repository at "+filepath.Join(outside, ".git-memory"))
+
+	// init is "here", also in a subfolder of a project, where it is kept out of git status like the one at the root
+	e.gm(sub, "init", "-q")
+	e.ok(e.exists(filepath.Join(sub, ".git-memory", ".git")), "init did not create it here")
+	e.eq(e.status(dir), "")
+	e.eq(strings.TrimSpace(e.gm(sub, "rev-parse", "--show-toplevel")), filepath.Join(sub, ".git-memory"))
+
+	// the hooks of a project never make one: without it they log and record nothing in a repository that is not there
+	e.skipOnWindows()
+	proj := e.newRepoNoMemory("unwired")
+	e.agentInit(proj) // wiring a project is the other way to get one
+	e.ok(e.exists(filepath.Join(proj, ".git-memory", ".git")), "agent init did not create the project's memory repository")
+	e.eq(e.status(proj), "")
+	e.eq(len(strings.TrimSpace(e.git(proj, "ls-files", "--others", "--exclude-standard"))), 0)
+}
+
+func TestListShowsEveryMemoryGroupedByWhereItLives(t *testing.T) {
+	e := newEnv(t)
+	e.skipOnWindows()
+	dir := e.newProject("lister")
+	proj := e.project(dir)
+
+	// in the memory repository: this project's (one committed, one not yet, one retired), a global one, and a session page
+	e.commitPage(dir, proj+"/memories/decision/use-rest.md", "---\nkind: decision\ntier: semantic\n---\n\n# Public APIs are REST\n\nBecause clients.\n")
+	e.write(filepath.Join(e.home, proj, "memories/fact/port.md"), "---\nkind: fact\n---\n\n# The API listens on 8080\n\nx\n")
+	e.commitPage(dir, proj+"/memories/note/old.md", "---\nkind: note\nstatus: superseded\n---\n\n# An old note\n\nx\n")
+	e.commitPage(dir, "global/core/pnpm.md", "---\nkind: decision\ntier: core\n---\n\n# Use pnpm\n\nNever npm.\n")
+	e.write(filepath.Join(e.home, proj, "sessions/2026/11/2026-11-12-claude-ab12cd34.md"), "---\nkind: session\n---\n\n# A session\n\nx\n")
+	// and in the agents' own folders
+	e.write(filepath.Join(e.claudeMemoryOf(dir), "feedback_tailwind.md"), claudeFeedback)
+	e.write(filepath.Join(e.claudeMemoryOf(dir), "MEMORY.md"), "- [x](feedback_tailwind.md)\n")
+	user, workspace := e.copilotMemoryOf(dir)
+	e.write(filepath.Join(workspace, "build.md"), "# Build with make\n\nRun make.\n")
+	e.write(filepath.Join(user, "tabs.md"), "# I prefer tabs\n\nAlways tabs.\n")
+
+	out := e.gm(dir, "list")
+	e.has(out, ".git-memory · this project ("+proj+") · 3 memories")
+	e.match(out, `(?m)^  decision  Public APIs are REST +`+regexp.QuoteMeta(proj)+`/memories/decision/use-rest\.md$`)
+	e.has(out, proj+"/memories/fact/port.md", "a memory that is not committed yet is listed")
+	e.match(out, `(?m)memories/note/old\.md +— superseded$`)
+	e.lacks(out, "A session", "session pages are not memories")
+	e.has(out, ".git-memory · global · 1 memory")
+	e.match(out, `(?m)^  decision  Use pnpm +global/core/pnpm\.md +— pinned$`)
+	e.has(out, "Claude Code memory ("+e.claudeMemoryOf(dir)+") · 1 memory")
+	e.match(out, `(?m)^  decision  use-tailwind +claude:feedback_tailwind\.md +— The user prefers Tailwind over CSS modules$`)
+	e.lacks(out, "MEMORY.md", "Claude's index is not a memory")
+	e.match(out, `(?m)^  note  Build with make +copilot:build\.md$`)
+	e.match(out, `(?m)^  note  I prefer tabs +copilot-user:tabs\.md$`)
+
+	// a group on its own
+	only := e.gm(dir, "list", "claude")
+	e.has(only, "claude:feedback_tailwind.md")
+	e.lacks(only, "Use pnpm")
+	e.lacks(only, "copilot:")
+	e.has(e.gm(dir, "list", "copilot"), "copilot-user:tabs.md")
+	e.lacks(e.gm(dir, "list", "repo"), "claude:")
+
+	// sessions: only when asked for, newest first, optionally narrowed to a year, a month or a day
+	e.write(filepath.Join(e.home, proj, "sessions/2026/11/2026-11-13-copilot-ee55ff66.md"), "---\nkind: session\nagent: copilot\n---\n\n# Later session\n\nx\n")
+	e.write(filepath.Join(e.home, proj, "sessions/2025/12/2025-12-31-claude-00aa11bb.md"), "---\nkind: session\nagent: claude\n---\n\n# Last year\n\nx\n")
+	all := e.gm(dir, "list", "sessions")
+	e.has(all, ".git-memory · sessions ("+proj+"/sessions) · 3 sessions")
+	e.match(all, `(?m)^  session  Later session +`+regexp.QuoteMeta(proj)+`/sessions/2026/11/2026-11-13-copilot-ee55ff66\.md +— 2026-11-13 · copilot$`)
+	e.ok(strings.Index(all, "Later session") < strings.Index(all, "A session") && strings.Index(all, "A session") < strings.Index(all, "Last year"), "newest first:\n"+all)
+	e.lacks(all, "Use pnpm", "sessions on their own list nothing else")
+	e.lacks(all, "claude:")
+	day := e.gm(dir, "list", "sessions", "2026-11-12")
+	e.has(day, ".git-memory · sessions 2026-11-12 (")
+	e.has(day, "A session")
+	e.lacks(day, "Later session")
+	e.has(e.gm(dir, "list", "2026-11"), "· 2 sessions")
+	e.has(e.gm(dir, "list", "2025"), "Last year")
+	e.has(e.gm(dir, "list", "2024"), "· empty")
+	e.lacks(e.gm(dir, "list", "claude", "2026-11-13"), "A session", "a date only narrows the sessions")
+	e.has(e.gm(dir, "list"), "· 3 memories")
+	e.lacks(e.gm(dir, "list"), "Later session")
+
+	// every row's name is one promote takes
+	e.has(e.gm(dir, "promote", "claude:feedback_tailwind.md", "--to", "project"), "→ "+proj+"/memories/decision/use-tailwind.md")
+
+	// it only reads
+	e.eq(e.status(dir), "")
+	_, errOut, code := e.gmRaw(dir, "list", "everything")
+	e.eq(code, 1)
+	e.has(errOut, "usage: git-memory list")
+
+	// outside a project: no repository there, and only what does not depend on a project
+	outside := e.mkdir("outside")
+	e.has(e.gm(outside, "list", "sessions"), "sessions: they belong to a project")
+	nothing := e.gm(outside, "list")
+	e.has(nothing, ".git-memory: none at "+filepath.Join(outside, ".git-memory"))
+	e.has(nothing, "copilot-user:tabs.md")
+	e.lacks(nothing, "claude:")
 }

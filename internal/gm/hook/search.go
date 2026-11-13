@@ -1,10 +1,12 @@
-package gm
+package hook
 
 import (
 	"math"
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/Rickedb/git-memory/internal/gm/core"
 )
 
 var stopWords = func() map[string]bool {
@@ -53,7 +55,7 @@ type searchHit struct {
 
 type searchOptions struct {
 	Limit int
-	Pages []*Page
+	Pages []*core.Page
 }
 
 func snippet(body string, terms []string) string {
@@ -77,7 +79,7 @@ func snippet(body string, terms []string) string {
 			best, bestHits = l, hits
 		}
 	}
-	return oneLine(best, 220)
+	return core.OneLine(best, 220)
 }
 
 // search ranks pages with BM25 (title/tag weighting, a recency boost and a kind boost). The "index" is computed in
@@ -101,13 +103,13 @@ func search(query string, o searchOptions) []searchHit {
 	}
 
 	type doc struct {
-		page *Page
+		page *core.Page
 		tf   map[string]float64
 		len  float64
 	}
 	var docs []doc
 	for _, p := range o.Pages {
-		if !isActive(p) { // superseded pages no longer bind
+		if !core.IsActive(p) { // superseded pages no longer bind
 			continue
 		}
 		tf := map[string]float64{}
@@ -146,7 +148,7 @@ func search(query string, o searchOptions) []searchHit {
 			}
 		}
 	}
-	now := float64(nowMs())
+	now := float64(core.NowMs())
 	const k1, b = 1.2, 0.75
 
 	var results []searchHit
@@ -165,14 +167,14 @@ func search(query string, o searchOptions) []searchHit {
 		if matched == 0 {
 			continue
 		}
-		ageDays := math.Max(0, (now-float64(pageTime(d.page)))/86400000)
+		ageDays := math.Max(0, (now-float64(core.PageTime(d.page)))/86400000)
 		boost, ok := kindBoost[d.page.Kind]
 		if !ok {
 			boost = 1
 		}
 		score *= (1 + 0.3*math.Exp(-ageDays/30)) * boost
 		results = append(results, searchHit{
-			Ref: pageRef(d.page), Title: d.page.Title, Kind: d.page.Kind, Scope: d.page.Scope, Score: score,
+			Ref: core.PageRef(d.page), Title: d.page.Title, Kind: d.page.Kind, Scope: d.page.Scope, Score: score,
 			Matched: matched, Terms: len(terms), Snippet: snippet(d.page.Body, terms),
 		})
 	}

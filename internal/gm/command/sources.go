@@ -1,4 +1,4 @@
-package gm
+package command
 
 import (
 	"net/url"
@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+
+	"github.com/Rickedb/git-memory/internal/gm/core"
 )
 
 // The agents keep memories of their own. git-memory finds them where the agents write them, in place and without any
@@ -70,7 +72,7 @@ func copilotMemoryDirs(root string) (user, workspace string) {
 		wsRoot := filepath.Join(userData, "workspaceStorage")
 		entries, _ := os.ReadDir(wsRoot)
 		for _, e := range entries {
-			raw := readJSON(filepath.Join(wsRoot, e.Name(), "workspace.json"))
+			raw := core.ReadJSON(filepath.Join(wsRoot, e.Name(), "workspace.json"))
 			folder, _ := raw["folder"].(string)
 			if !sameFolder(folder, root) {
 				continue
@@ -114,7 +116,7 @@ func kindFromType(t string) string {
 	case "user", "project", "reference":
 		return "fact"
 	}
-	if isKind(strings.ToLower(t)) {
+	if core.IsKind(strings.ToLower(t)) {
 		return strings.ToLower(t)
 	}
 	return "note"
@@ -129,7 +131,7 @@ type agentSource struct {
 
 var agentSourceNames = []string{"claude", "copilot", "copilot-user"}
 
-func isAgentSource(name string) bool { return contains(agentSourceNames, name) }
+func isAgentSource(name string) bool { return core.Contains(agentSourceNames, name) }
 
 // agentSources looks for the agents' memory folders. root is the project's working tree; with "" only the folders that
 // do not depend on a project (Copilot's user-level one) can be found.
@@ -145,7 +147,7 @@ func agentSources(root string) []agentSource {
 		{"copilot-user", "Copilot memory (user)", user},
 	}
 	for i := range list {
-		if list[i].Dir != "" && !exists(list[i].Dir) {
+		if list[i].Dir != "" && !core.Exists(list[i].Dir) {
 			list[i].Dir = ""
 		}
 	}
@@ -161,7 +163,7 @@ func (s agentSource) Files() []string {
 	_ = filepath.WalkDir(s.Dir, func(p string, d os.DirEntry, err error) error {
 		if err == nil && !d.IsDir() && strings.HasSuffix(strings.ToLower(d.Name()), ".md") {
 			if rel, rerr := filepath.Rel(s.Dir, p); rerr == nil && rel != "MEMORY.md" {
-				out = append(out, slash(rel))
+				out = append(out, core.Slash(rel))
 			}
 		}
 		return nil

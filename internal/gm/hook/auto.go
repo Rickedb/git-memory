@@ -1,8 +1,10 @@
-package gm
+package hook
 
 import (
 	"regexp"
 	"strings"
+
+	"github.com/Rickedb/git-memory/internal/gm/core"
 )
 
 type candidate struct {
@@ -40,8 +42,8 @@ func triggersIn(prompt string) []candidate {
 		} else if m := trigThat.FindStringSubmatch(line); m != nil {
 			kind, text = "note", m[1]
 		}
-		if kind != "" && isKind(kind) && text != "" && len([]rune(strings.TrimSpace(text))) >= 8 {
-			out = append(out, candidate{Kind: kind, Title: oneLine(text, 60), Text: strings.TrimSpace(text)})
+		if kind != "" && core.IsKind(kind) && text != "" && len([]rune(strings.TrimSpace(text))) >= 8 {
+			out = append(out, candidate{Kind: kind, Title: core.OneLine(text, 60), Text: strings.TrimSpace(text)})
 		}
 	}
 	return out

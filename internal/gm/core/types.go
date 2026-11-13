@@ -1,4 +1,4 @@
-package gm
+package core
 
 import (
 	"path/filepath"
@@ -18,7 +18,7 @@ type Project struct {
 	BaseLoc
 	// Slug identifies the project inside the memory repository: the origin remote's name, else the directory name.
 	Slug string
-	// Mem is the memory repository: ~/.git-memory. It is a plain git repo that the user can clone.
+	// Mem is the memory repository: <project root>/.git-memory. It is a plain git repo that the user can clone.
 	Mem string
 }
 
@@ -31,7 +31,7 @@ func (p *Project) DirRel() string { return "projects/" + p.Slug }
 // GlobalDir holds the memories that apply to every project.
 func (p *Project) GlobalDir() string { return filepath.Join(p.Mem, "global") }
 
-const globalRel = "global"
+const GlobalRel = "global"
 
 // Meta is page frontmatter. Order is preserved: pages are rewritten in place and diffs should stay small.
 type Meta struct {
@@ -45,7 +45,7 @@ type metaVal struct {
 	isList bool
 }
 
-func newMeta() *Meta { return &Meta{vals: map[string]metaVal{}} }
+func NewMeta() *Meta { return &Meta{vals: map[string]metaVal{}} }
 
 func (m *Meta) put(k string, v metaVal) *Meta {
 	if _, ok := m.vals[k]; !ok {
@@ -95,7 +95,7 @@ type Page struct {
 
 var kinds = []string{"decision", "procedure", "fact", "note"}
 
-func isKind(k string) bool { return contains(kinds, k) }
+func IsKind(k string) bool { return Contains(kinds, k) }
 
 // Event is one line of a session spool. Field order is the order in the file.
 type Event struct {
@@ -115,11 +115,11 @@ type Event struct {
 
 type HookPayload = map[string]any
 
-func joinLines(lines []string) string { return strings.Join(lines, "\n") }
+func JoinLines(lines []string) string { return strings.Join(lines, "\n") }
 
 // Clone copies the frontmatter, keeping its key order.
 func (m *Meta) Clone() *Meta {
-	c := newMeta()
+	c := NewMeta()
 	for _, k := range m.keys {
 		c.put(k, m.vals[k])
 	}

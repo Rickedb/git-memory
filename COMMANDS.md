@@ -1,12 +1,12 @@
 # git-memory: commands and how to use them
 
-`git-memory` is `git`, pointed at one repository: your **memory repository**, `~/.git-memory`. This page lists the commands git-memory has of its own, then walks through the everyday jobs. It does not list git's commands: those are git's, and `git help` or `git-memory help` covers them.
+`git-memory` is `git`, pointed at one repository: your **memory repository**, the `.git-memory` folder of the folder you are in (for a project, its root). This page lists the commands git-memory has of its own, then walks through the everyday jobs. It does not list git's commands: those are git's, and `git help` or `git-memory help` covers them.
 
 ## The commands
 
 ### `git-memory <git command> [args…]`
 
-Runs `git <git command> [args…]` **inside the memory repository**, from whatever directory you are in. Arguments, flags, stdin, the terminal and the exit code are git's own.
+Runs `git <git command> [args…]` **inside the memory repository**: the `.git-memory` folder of the folder you are in. Arguments, flags, stdin, the terminal and the exit code are git's own.
 
 ```bash
 git-memory status
@@ -17,27 +17,28 @@ git-memory grep -n -i "retry"
 git-memory push
 ```
 
-If the memory repository does not exist yet, the first command creates it (`git init`), but only when `~/.git-memory` is missing or empty. If the folder holds something else, git-memory stops and tells you, instead of initialising over your files.
+**git-memory does not search for the memory repository.** Be in the folder that has the `.git-memory` (for a project, its root). In any other folder the command says `no memory repository at <folder>/.git-memory: run git-memory init` and does nothing: only `init`, `clone` and `agent init` ever create one, so a mistyped folder never grows a stray one.
 
-Paths are relative to the memory repository, not to your current directory: `git-memory add global` stages `~/.git-memory/global`.
+Paths are relative to the memory repository, not to your current directory: `git-memory add global` stages `.git-memory/global`.
 
 ### `git-memory clone <url>`
 
-Clones an existing memory repository **into** `~/.git-memory` (you do not give a destination). Options before the URL go to `git clone`.
+Clones an existing memory repository **into** `.git-memory` in the current folder (you do not give a destination). Options before the URL go to `git clone`.
 
 ```bash
 git-memory clone git@github.com:me/memory.git
 git-memory clone --depth 1 https://example.com/me/memory.git
 ```
 
-It refuses if `~/.git-memory` already exists and is not empty. Move that folder aside first, or work with it directly (`git-memory pull`).
+It refuses if `.git-memory` already exists here and is not empty. Move that folder aside first, or work with it directly (`git-memory pull`).
 
 ### `git-memory init`
 
-`git init` for the memory repository, on purpose. Use it when `~/.git-memory` already contains files you want to keep and track. Normally you never need it: the repository is created the first time it is needed.
+`git init`, **here**: creates the `.git-memory` folder in the current folder and makes it the memory repository (branch `main`). When the current folder is inside a git project, the new folder is kept out of the project's `git status` through `.git/info/exclude`, not your `.gitignore`. Extra arguments go to `git init`. Use it too when a `.git-memory` folder with files you want to keep already exists.
 
 ```bash
-git-memory init                                  # ~/.git-memory now is a repository, files untouched
+cd your-project
+git-memory init                                  # ./.git-memory is now a repository (any files in it are untouched)
 git-memory add . && git-memory commit -m "start tracking"
 ```
 
@@ -49,7 +50,7 @@ Prints the **version** and a **health report**: where the memory repository is, 
 $ git-memory doctor
 git-memory 0.0.1 · git version 2.56.0
 
-✓ Memory repository: /home/you/.git-memory (branch main, 2 commits)
+✓ Memory repository: /home/you/shop/.git-memory (branch main, 2 commits)
 ✓ Remote: origin → git@github.com:me/memory.git
 ✓ Uncommitted changes: none
 ✓ Global folder: global (memories that apply to every project)
@@ -57,7 +58,7 @@ git-memory 0.0.1 · git version 2.56.0
 ✓ Pages: 1 memory and 1 session in this project, 0 global
 ✓ Claude Code hooks: 7 events
 ✓ Copilot hooks: 6 events
-✓ Slash commands: Claude Code 6/6, Copilot 6/6
+✓ Slash commands: Claude Code 7/7, Copilot 7/7
 ✓ Hook launcher: .git/git-memory/gm
 ✓ Binary used by hooks: /home/you/.local/bin/git-memory
 ✓ Agent activity: last hook event just now
@@ -71,13 +72,51 @@ git-memory 0.0.1 · git version 2.56.0
 | Mark | Meaning |
 | --- | --- |
 | `✓` | fine |
-| `·` | nothing to report yet (no remote, repository not created, no agent activity) |
-| `!` | worth a look: uncommitted changes, hooks not installed, errors logged |
+| `·` | nothing to report yet (no remote, no agent activity) |
+| `!` | worth a look: no memory repository here, uncommitted changes, hooks not installed, errors logged |
 | `✗` | broken: the memory folder is not a repository, the hooks point at a binary that no longer exists |
 
 The last rows list the **agents' own memories** it found, in place and read-only: Claude Code's auto memory for this project (`~/.claude/projects/<project>/memory`, or under `$CLAUDE_CONFIG_DIR`), VS Code Copilot Chat's memory for this workspace, and its user-level memory. Each shows its folder, how many memories it holds and the first file names (Claude's own `MEMORY.md` index is not counted). Those names are what `git-memory promote` takes.
 
-It exits with 1 when any row is `✗`, so scripts can rely on it; `--report` makes it always exit 0 (the `/memories` slash command uses that, so a warning can never abort it). Outside a git project it still reports the memory repository and says `· Project: not inside a git project`. The project's folder is named after its `origin` remote (`git@github.com:acme/shop.git` → `projects/shop`), or after its directory when there is no remote. It never creates anything.
+It exits with 1 when any row is `✗`, so scripts can rely on it; `--report` makes it always exit 0 (the `/memories` slash command uses that, so a warning can never abort it). Inside a project it checks the project root's `.git-memory`; outside one, the current folder's, and it says `· Project: not inside a git project`. The project's folder is named after its `origin` remote (`git@github.com:acme/shop.git` → `projects/shop`), or after its directory when there is no remote. It never creates anything.
+
+### `git-memory list [repo|claude|copilot|sessions] [YYYY[-MM[-DD]]]…`
+
+Lists **every memory there is** for the project you are in, in one place, grouped by where it lives: the memory repository (this project's and the global ones), Claude Code's own memory, and Copilot's. It only reads.
+
+```
+$ git-memory list
+.git-memory · this project (projects/shop) · 2 memories
+  decision  Public APIs are REST          projects/shop/memories/decision/use-rest.md
+  fact      The API listens on 8080       projects/shop/memories/fact/port.md
+
+.git-memory · global · 1 memory
+  decision  Use pnpm                      global/core/pnpm.md  — pinned
+
+Claude Code memory (/home/you/.claude/projects/-home-you-shop/memory) · 1 memory
+  decision  use-tailwind                  claude:feedback_tailwind.md  — The user prefers Tailwind over CSS modules
+
+Copilot memory (this workspace) (none found)
+
+Copilot memory (user) (none found)
+```
+
+Each row has the kind, the title and a **name**: the page's path in the memory repository, or `claude:<file>`, `copilot:<file>`, `copilot-user:<file>` for the agents' memories. That is exactly what `promote` and `demote` take, so a listing is a to-do list:
+
+```bash
+git-memory list                      # everything
+git-memory list claude               # only Claude Code's own memory
+git-memory list copilot              # Copilot's, this workspace's and yours
+git-memory list repo                 # only the memory repository
+git-memory list sessions             # this project's session pages, newest first
+git-memory list sessions 2026-11     # only the sessions of a month (a year or a day work too)
+git-memory list 2026-11-13           # a date on its own means sessions
+git-memory promote claude:feedback_tailwind.md --to project
+```
+
+- Session pages are not memories, so a plain `list` leaves them out; ask for them with `sessions`, newest first, optionally narrowed to a year, month or day (`2026`, `2026-11`, `2026-11-13`). Each row shows the first prompt of the session as its title, and its date and agent. Pages not committed yet are listed. A retired page shows `— superseded`, a pinned one `— pinned`; for the agents' memories the note is their own description.
+- Run it from a project root. Outside a project it lists what does not depend on one: the current folder's `.git-memory` (global memories) and Copilot's user-level memory.
+- `doctor` shows how many memories each agent has; `list` shows what they are.
 
 ### `git-memory promote <source>… --to project|global`
 
@@ -91,7 +130,7 @@ Brings a memory into the memory repository, into **this project's folder** (`--t
 | any markdown file | `./notes/retries.md` | **copied** |
 
 ```bash
-git-memory doctor                                            # lists the agents' memories it found
+git-memory list claude                                       # lists the agents' memories (doctor counts them)
 git-memory promote claude:feedback_tailwind.md --to project  # this project only
 git-memory promote claude:tailwind --to global               # a unique part of the name is enough
 git-memory promote copilot-user:tabs.md --to global
@@ -105,7 +144,7 @@ Each promotion prints what it did (`promoted claude:feedback_tailwind.md → pro
 - **Copies are converted.** Claude's `type` becomes a kind (`feedback` → `decision`, since it is guidance on how to work; `user`, `project`, `reference` → `fact`), the agent's `description` becomes the first line, secrets are redacted, and the page records where it came from (`source: claude:feedback_tailwind.md`, tag `from-claude`; `from-copilot`, `from-copilot-user`, `from-file` likewise).
 - **Nothing is overwritten.** Promoting the same file twice to the same place is refused (`was already promoted`); so is moving a page onto one that exists, or into the folder it is already in. A name that matches two pages is reported as ambiguous instead of guessed.
 - **Nothing outside the memory repository is changed.** The agents' folders are only read.
-- **It runs inside a project**, because `project` and Claude's memory folder both depend on which project you are in.
+- **It runs inside a project**, because `project` and Claude's memory folder both depend on which project you are in. It writes into the `.git-memory` of the project's root, which must exist (`git-memory init` or `agent init`).
 
 The Claude location is verified. The Copilot locations follow VS Code Copilot Chat's `memory-tool/memories` layout and have **not** been checked against a machine that has Copilot memories yet; `doctor` shows `none found` if yours are elsewhere.
 
@@ -128,7 +167,7 @@ It prints what it did (`demoted global/memories/decision/use-rest.md → project
 | `claude:<file>`, a file on disk | refused: those are brought in with `promote`, not narrowed |
 | a name that exists in the project's folder too | `… already exists`: nothing is overwritten |
 
-Like `promote`, it runs inside a project, because "this project" is where the page goes.
+Like `promote`, it runs inside a project, because "this project" is where the page goes. It uses the `.git-memory` of the project's root.
 
 ### `git-memory agent init [--no-claude] [--no-copilot] [--no-commands]`
 
@@ -146,10 +185,10 @@ git-memory agent init --no-commands    # hooks only, no slash commands
 | --- | --- |
 | `.claude/settings.local.json` | Claude Code hooks (skipped with `--no-claude`) |
 | `.github/hooks/git-memory.json` | Copilot hooks (skipped with `--no-copilot`) |
-| `.claude/skills/*`, `.github/prompts/*` | the slash commands `/remember /decide /recall /memories /promote /forget` (skipped with `--no-commands`) |
+| `.claude/skills/*`, `.github/prompts/*` | the slash commands `/remember /decide /recall /memories /list /promote /forget` (skipped with `--no-commands`) |
 | `.git/git-memory/gm` | the launcher the hook files call (a small script that runs the installed binary) |
 
-It adds nothing to your project's tracked files: everything is git-excluded or lives under `.git`. It also creates the memory repository if it does not exist. It is safe to re-run (after upgrading, or to refresh the commands); your own hooks, settings and same-named command files are kept. Hook entries written by earlier development builds are replaced.
+It adds nothing to your project's tracked files: everything is git-excluded or lives under `.git`. It also creates the project's `.git-memory` (git-excluded too) if there is none, and never touches one that is there, or a folder of that name that holds other files. It is safe to re-run (after upgrading, or to refresh the commands); your own hooks, settings and same-named command files are kept. Hook entries written by earlier development builds are replaced.
 
 ### `git-memory agent hook <claude|copilot> <event>`
 
@@ -174,9 +213,9 @@ git-memory 0.0.1
 
 ### Settings: there are none
 
-No config files, no environment variables. Like git, which is "the `.git` folder", git-memory is "the `~/.git-memory` folder": that is where the memory lives, and everything else follows from it.
+No config files, no environment variables. Like git, which is "the `.git` folder", git-memory is "the `.git-memory` folder": the one in the folder you are in is where the memory lives, and everything else follows from it. The agent hooks use the one in the project's root.
 
-`agent`, `doctor`, `promote` and `demote` are the only words git-memory keeps for itself. Everything else, including `init`, `hook` and `version`, is git's.
+`agent`, `doctor`, `list`, `promote` and `demote` are the only words git-memory keeps for itself. Everything else, including `init`, `hook` and `version`, is git's.
 
 ## Everyday jobs
 
@@ -187,16 +226,16 @@ cd your-project
 git-memory agent init
 ```
 
-That is all. There is nothing to configure and nothing for `git status` to show in the project. Start Claude Code or Copilot in the project and sessions are captured from then on.
+That is all: it creates the project's `.git-memory`. There is nothing to configure and nothing for `git status` to show in the project. Start Claude Code or Copilot in the project and sessions are captured from then on.
 
 ### Use a memory repository you already have
 
-On a new machine, or to start from a team's repository, clone it before wiring projects:
+On a new machine, or to start from a team's repository, clone it into the project before wiring it:
 
 ```bash
-git-memory clone git@github.com:me/memory.git
 cd your-project
-git-memory agent init
+git-memory clone git@github.com:me/memory.git      # into ./.git-memory
+git-memory agent init                               # keeps what is there, adds the hooks
 ```
 
 ### Save a memory by hand
@@ -204,9 +243,9 @@ git-memory agent init
 A memory is a markdown file in the memory repository, saved with ordinary git. Put it in the project's folder (`git-memory doctor` shows it as `Project folder`) or in `global/` for every project.
 
 ```bash
-# 1. write the page (any editor works; this finds the repository for you)
-mkdir -p ~/.git-memory/projects/shop/memories/decision
-$EDITOR ~/.git-memory/projects/shop/memories/decision/use-rest.md
+# 1. write the page (any editor works), from the project's root
+mkdir -p .git-memory/projects/shop/memories/decision
+$EDITOR .git-memory/projects/shop/memories/decision/use-rest.md
 ```
 
 ```markdown
@@ -257,7 +296,7 @@ git-memory demote use-rest                    # and back: narrows it to the curr
 They keep memories of their own, and `doctor` lists them. Copy the ones worth keeping into the memory repository, where they are committed, synced and shared like any other:
 
 ```bash
-git-memory doctor                                            # see what was found
+git-memory list claude copilot                               # see what was found
 git-memory promote claude:feedback_tailwind.md --to project
 git-memory promote copilot-user:preferences.md --to global
 ```
@@ -267,7 +306,7 @@ git-memory promote copilot-user:preferences.md --to global
 A decision that changed is better retired than deleted: add `status: superseded` to its frontmatter (and a note saying what replaced it), then commit. It stays in git, but it leaves briefings and recall.
 
 ```bash
-$EDITOR ~/.git-memory/global/memories/decision/use-rest.md      # add the line:  status: superseded
+$EDITOR .git-memory/global/memories/decision/use-rest.md      # add the line:  status: superseded
 git-memory commit -am "memory: retire the REST decision"
 ```
 
@@ -289,19 +328,20 @@ The memory repository is a normal git repository, so any remote works: GitHub, G
 git-memory remote add origin git@github.com:me/memory.git
 git-memory push -u origin main
 
-# machine B: bring it down (once), then wire the projects
+# machine B: bring it down (once), into the project, then wire it
 git-memory clone git@github.com:me/memory.git
+git-memory agent init
 
 # afterwards, either machine
 git-memory pull
 git-memory push
 ```
 
-The hooks commit locally and never push, so you decide when memory leaves the machine. Each project has its own folder, so two machines (or two teammates) working on different projects do not collide; if two people edit the same page, git asks to merge like it would for any file.
+The hooks commit locally and never push, so you decide when memory leaves the machine. Each project has its own `.git-memory`, so each one has its own remote and history; if two people edit the same page, git asks to merge like it would for any file.
 
 ### Share with a team
 
-Use one remote and have everyone clone it: `git-memory clone <url>`, then `git-memory agent init` in each project. Pages for `projects/shop` are shared by everyone who works on `shop`; `global/` is shared by everyone. Everything in the memory repository goes to whoever can read its remote, so point a shared repository at a team-only remote, and leave the remote off for notes that should stay on your machine.
+Use one remote per project and have everyone clone it into their copy of the project: `git-memory clone <url>`, then `git-memory agent init`. Pages for `projects/shop` are shared by everyone who works on `shop`; `global/` is shared by everyone who uses that repository. Everything in the memory repository goes to whoever can read its remote, so point a shared repository at a team-only remote, and leave the remote off for notes that should stay on your machine.
 
 ### Inside the agents
 
@@ -323,7 +363,8 @@ At the start of each session the agent is briefed automatically: pinned notes, e
 | --- | --- |
 | Anything looks off | `git-memory doctor` in the project: it checks the repository, the hooks, the launcher, recent activity and logged errors |
 | A session left no page | `git-memory doctor`, then `cat .git/git-memory/errors.log` in the project and `git-memory log --oneline -n 5` |
-| "… is not a git repository" | `~/.git-memory` exists with other files in it. Move it aside, clone into place, or run `git-memory init` if you want to track it |
+| "no memory repository at …" | you are not in the folder that has the `.git-memory` (nothing is searched for), or it was never made: `cd` to it, or run `git-memory init` / `git-memory agent init` here |
+| "… is not a git repository" | the `.git-memory` folder exists with other files in it. Move it aside, or run `git-memory init` there if you want to track it |
 | `git-memory` is "not found" inside an agent | the hooks don't use your `PATH`; re-run `git-memory agent init` in the project to refresh `.git/git-memory/gm` |
 | You want the hooks off in a project | delete `.github/hooks/git-memory.json` and the git-memory entries in `.claude/settings.local.json`; `git-memory agent init` brings them back |
 | Test a hook by hand | see `git-memory agent hook` above |

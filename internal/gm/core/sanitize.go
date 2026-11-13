@@ -1,4 +1,4 @@
-package gm
+package core
 
 import (
 	"regexp"
@@ -43,7 +43,7 @@ var harnessOpen = regexp.MustCompile(`(?i)<(ide_[a-z_]+|system-reminder|command-
 // stripHarnessContext drops the context blocks editors and harnesses wrap around your prompt (<ide_opened_file>,
 // <ide_selection>, <system-reminder>, ...). They are noise (and may contain selected code), not something you said.
 // RE2 cannot match a closing tag by backreference, so each opening tag is paired with its closing tag by hand.
-func stripHarnessContext(text string) string {
+func StripHarnessContext(text string) string {
 	var out strings.Builder
 	rest := text
 	for {
@@ -67,8 +67,8 @@ func stripHarnessContext(text string) string {
 	return strings.TrimSpace(out.String())
 }
 
-func clean(text string, max int) string {
-	return truncate(redact(stripPrivate(text)), max)
+func Clean(text string, max int) string {
+	return Truncate(redact(stripPrivate(text)), max)
 }
 
 func globToRegExp(glob string) *regexp.Regexp {
@@ -100,7 +100,7 @@ func globToRegExp(glob string) *regexp.Regexp {
 	return regexp.MustCompile("(?s)" + re.String())
 }
 
-func isExcluded(relPath string, patterns []string) bool {
+func IsExcluded(relPath string, patterns []string) bool {
 	p := strings.ReplaceAll(relPath, "\\", "/")
 	for _, g := range patterns {
 		if globToRegExp(g).MatchString(p) {
