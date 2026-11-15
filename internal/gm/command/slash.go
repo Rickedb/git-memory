@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/Rickedb/git-memory/internal/gm/core"
+	"github.com/Rickedb/git-memory/internal/gm/hook"
+	"github.com/Rickedb/git-memory/internal/gm/hook/agent"
 )
 
 // generatedMarker is the first line of every generated file; init only overwrites files that carry it, never a user's own.
@@ -21,15 +23,24 @@ type commandDef struct {
 
 // Templates are written with § for a backtick (Go raw strings cannot hold one) and {GM} for the CLI.
 func render(tpl, gm string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(tpl, "§", "`"), "{GM}", gm)
+	return strings.NewReplacer("§", "`", "{GM}", gm, "{AGENTS}", agentChoices()).Replace(tpl)
+}
+
+// agentChoices is what `agent init` takes, for the text it is named in: <claude|copilot|...|all>.
+func agentChoices() string {
+	var names []string
+	for _, a := range hook.Agents {
+		names = append(names, a.Name)
+	}
+	return "<" + strings.Join(append(names, allAgents), "|") + ">"
 }
 
 // whereNote is added to every command: the path is relative, so the agent has to know what it is relative to, and what to
 // do when the CLI is not there (a fresh clone, a new machine): offer the install instead of stopping or improvising.
-const whereNote = "The CLI is §{GM}§, relative to the repository root: run it from there (in a linked worktree it is under the main repository's §.git§). It is git, run inside the user's memory repository (§{GM} doctor§ says where it is), so any git command works; use only add, commit, mv, rm and read-only ones, and never push, reset or rewrite history unless the user asks. It is created per machine by §git-memory agent init§.\n\n" +
+const whereNote = "The CLI is §{GM}§, relative to the repository root: run it from there (in a linked worktree it is under the main repository's §.git§). It is git, run inside the user's memory repository (§{GM} doctor§ says where it is), so any git command works; use only add, commit, mv, rm and read-only ones, and never push, reset or rewrite history unless the user asks. It is created per machine by §git-memory agent init {AGENTS}§.\n\n" +
 	"**If §{GM}§ does not exist** (\"No such file or directory\", \"command not found\"), git-memory is not set up on this machine yet. Do not work around it and do not touch the memory files by hand. Check whether the binary is installed (§command -v git-memory§, or §Get-Command git-memory§ on Windows), then tell the user what is missing and how to fix it, and ask whether you should do it for them:\n" +
-	"- binary installed: §git-memory agent init§, run from the repository root, sets this project up (hooks, commands and the CLI launcher).\n" +
-	"- binary not installed: install it first, then run §git-memory agent init§. On Linux: §curl -fsSL https://github.com/Rickedb/git-memory/releases/latest/download/install.sh | sh§. On Windows (PowerShell): §irm https://github.com/Rickedb/git-memory/releases/latest/download/install.ps1 | iex§. It installs into the user's home directory, needs no root, and may need a new shell before §git-memory§ is on the PATH.\n\n" +
+	"- binary installed: §git-memory agent init {AGENTS}§ (naming the agent to set up), run from the repository root, sets this project up (hooks, commands and the CLI launcher).\n" +
+	"- binary not installed: install it first, then run §git-memory agent init {AGENTS}§. On Linux: §curl -fsSL https://github.com/Rickedb/git-memory/releases/latest/download/install.sh | sh§. On Windows (PowerShell): §irm https://github.com/Rickedb/git-memory/releases/latest/download/install.ps1 | iex§. It installs into the user's home directory, needs no root, and may need a new shell before §git-memory§ is on the PATH.\n\n" +
 	"Run those commands only after the user says yes; if they decline, stop. Once §{GM} doctor§ works, carry on with what the user asked. If the CLI exists but §{GM} log§ says the repository \"does not have any commits yet\", that is not an error: the memory is just empty."
 
 // commands are the slash commands worth having in an agent chat: each one adds something the typed prompt triggers
@@ -81,8 +92,8 @@ var commands = []commandDef{
 		Writes:      false,
 		body: `Look up what the project memory says about the topic the user gave (the text after the command, or the topic they asked about).
 
-1. Run §{GM} doctor --report§ for the project and global folders (§Project folder:§, §Global folder:§). Then run §{GM} grep -n -i -I -e "<keyword>" -- <project folder> <global folder>§ for a few keywords of the topic, trying synonyms if nothing matches. Pages with §status: superseded§ are retired decisions: skip them unless the user asks about history.
-2. For the most relevant hits, read the page with §{GM} show HEAD:<path>§.
+1. Run §{GM} doctor --report§ for the project and global folders (§Project folder:§, §Global folder:§). Then run §{GM} grep -n -i -I -e "<keyword>" -- <project folder> <global folder>§ for a few keywords of the topic, trying synonyms if nothing matches. Pages with §status: superseded§ are retired decisions: skip them unless the user asks about history. Past sessions are kept out of git, so §grep§ does not search them: §{GM} list sessions§ lists them (§{GM} list sessions 2026-11§ narrows it to a period), and each is a plain file under §.git-memory/§ that you can read.
+2. For the most relevant hits, read the page with §{GM} show HEAD:<path>§ (a session page is a plain file: read it from §.git-memory/<path>§).
 3. Answer from what the pages say and cite each by its path, e.g. §projects/shop/memories/decision/use-pnpm.md§. If nothing relevant is stored, say so plainly; do not guess or fill in from general knowledge.`,
 	},
 	{
@@ -169,6 +180,65 @@ func copilotPrompt(def commandDef, gm string) string {
 	return core.JoinLines(lines)
 }
 
+// codexSkill is the Codex skill (`$name`, or picked from /skills): Codex reads a name and a description.
+func codexSkill(def commandDef, gm string) string {
+	lines := []string{"---", "name: " + def.Name, "description: " + def.Description, "---", generatedMarker, "", render(def.body, gm), "", render(whereNote, gm), ""}
+	return core.JoinLines(lines)
+}
+
+// cursorCommand is the Cursor command (`/name`): plain markdown, no frontmatter.
+func cursorCommand(def commandDef, gm string) string {
+	lines := []string{generatedMarker, "", render(def.body, gm), "", render(whereNote, gm), ""}
+	return core.JoinLines(lines)
+}
+
+// geminiCommand is the Gemini CLI command (`/name`): a TOML file with a description and the prompt. What the user types
+// after the command is added to the prompt by Gemini CLI itself. The prompt is a literal multi-line string, which cannot
+// hold three single quotes in a row.
+func geminiCommand(def commandDef, gm string) string {
+	const fence = "'''"
+	prompt := strings.ReplaceAll(core.JoinLines([]string{render(def.body, gm), "", render(whereNote, gm)}), fence, "' ' '")
+	return "# git-memory:generated (init rewrites this file; copy it under another name to customize)\n" +
+		"description = " + core.MarshalJSON(def.Description, false) + "\n" +
+		"prompt = " + fence + "\n" + prompt + "\n" + fence + "\n"
+}
+
+// commandFormat is where an agent keeps its slash commands and how a command is written for it. Agents with no entry
+// here have no commands.
+type commandFormat struct {
+	path    func(name string) string // project-relative file
+	exclude func(name string) string // what to add to the git exclude list
+	render  func(def commandDef, gm, allowedTool string) string
+}
+
+var commandFormats = map[string]commandFormat{
+	"claude": {
+		path:    func(n string) string { return ".claude/skills/" + n + "/SKILL.md" },
+		exclude: func(n string) string { return "/.claude/skills/" + n + "/" },
+		render:  func(d commandDef, gm, allowed string) string { return claudeSkill(d, gm, allowed) },
+	},
+	"copilot": {
+		path:    func(n string) string { return ".github/prompts/" + n + ".prompt.md" },
+		exclude: func(n string) string { return "/.github/prompts/" + n + ".prompt.md" },
+		render:  func(d commandDef, gm, _ string) string { return copilotPrompt(d, gm) },
+	},
+	"codex": {
+		path:    func(n string) string { return ".agents/skills/" + n + "/SKILL.md" },
+		exclude: func(n string) string { return "/.agents/skills/" + n + "/" },
+		render:  func(d commandDef, gm, _ string) string { return codexSkill(d, gm) },
+	},
+	"cursor": {
+		path:    func(n string) string { return ".cursor/commands/" + n + ".md" },
+		exclude: func(n string) string { return "/.cursor/commands/" + n + ".md" },
+		render:  func(d commandDef, gm, _ string) string { return cursorCommand(d, gm) },
+	},
+	"gemini": {
+		path:    func(n string) string { return ".gemini/commands/" + n + ".toml" },
+		exclude: func(n string) string { return "/.gemini/commands/" + n + ".toml" },
+		render:  func(d commandDef, gm, _ string) string { return geminiCommand(d, gm) },
+	},
+}
+
 func isGenerated(file string) bool {
 	text, ok := core.ReadFileTry(file)
 	return ok && strings.Contains(text, "git-memory:generated")
@@ -176,32 +246,39 @@ func isGenerated(file string) bool {
 
 type commandsResult struct {
 	Written []string
+	// Names are the commands written (once each) and For the agents they were written for.
+	Names []string
+	For   []string
 	// Skipped are files that already exist and are not ours; they are left untouched.
 	Skipped []string
 }
 
-// installCommands installs the commands for Claude Code (.claude/skills/<name>/SKILL.md) and Copilot
-// (.github/prompts/<name>.prompt.md). Like the hooks they are git-excluded, so the project stays clean. A same-named
-// file of the user's own is never touched.
-func installCommands(base core.BaseLoc, gm, allowedTool string, claude, copilot bool) commandsResult {
+// installCommands installs the commands of each agent that has them (see commandFormats). Like the hooks they are
+// git-excluded, so the project stays clean. A same-named file of the user's own is never touched.
+func installCommands(base core.BaseLoc, gm, allowedTool string, agents []agent.Agent) commandsResult {
 	var result commandsResult
-	put := func(rel, content, excludeEntry string) {
-		file := filepath.Join(base.Root, filepath.FromSlash(rel))
-		if core.Exists(file) && !isGenerated(file) {
-			result.Skipped = append(result.Skipped, rel)
-			return
-		}
-		core.MkdirAll(filepath.Dir(file))
-		core.WriteFile(file, content)
-		core.ExcludeLocally(base, excludeEntry)
-		result.Written = append(result.Written, rel)
-	}
 	for _, def := range commands {
-		if claude {
-			put(".claude/skills/"+def.Name+"/SKILL.md", claudeSkill(def, gm, allowedTool), "/.claude/skills/"+def.Name+"/")
-		}
-		if copilot {
-			put(".github/prompts/"+def.Name+".prompt.md", copilotPrompt(def, gm), "/.github/prompts/"+def.Name+".prompt.md")
+		for _, a := range agents {
+			f, ok := commandFormats[a.Name]
+			if !ok {
+				continue
+			}
+			rel := f.path(def.Name)
+			file := filepath.Join(base.Root, filepath.FromSlash(rel))
+			if core.Exists(file) && !isGenerated(file) {
+				result.Skipped = append(result.Skipped, rel)
+				continue
+			}
+			core.MkdirAll(filepath.Dir(file))
+			core.WriteFile(file, f.render(def, gm, allowedTool))
+			core.ExcludeLocally(base, f.exclude(def.Name))
+			result.Written = append(result.Written, rel)
+			if !core.Contains(result.Names, def.Name) {
+				result.Names = append(result.Names, def.Name)
+			}
+			if !core.Contains(result.For, a.Label) {
+				result.For = append(result.For, a.Label)
+			}
 		}
 	}
 	return result

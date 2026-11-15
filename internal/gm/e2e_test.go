@@ -136,9 +136,17 @@ func (e *env) gmRaw(dir string, args ...string) (string, string, int) {
 	return e.run(dir, binPath, args...)
 }
 
-// agentInit wires a project to the memory repository (what a user runs once per project).
+// agentInit wires a project to the memory repository (what a user runs once per project): every agent unless args say
+// which (args may be flags only).
 func (e *env) agentInit(dir string, args ...string) string {
 	e.t.Helper()
+	named := false
+	for _, a := range args {
+		named = named || !strings.HasPrefix(a, "-")
+	}
+	if !named {
+		args = append([]string{"all"}, args...)
+	}
 	return e.sh(dir, binPath, append([]string{"agent", "init"}, args...)...)
 }
 
@@ -284,6 +292,30 @@ func (e *env) pageOf(dir, sub string) string {
 // show prints a page from the memory repository.
 func (e *env) show(dir, sub string) string { return e.gm(dir, "show", "HEAD:"+e.pageOf(dir, sub)) }
 
+// findSession finds the session page whose file name contains sub. Session pages are local files of the memory
+// repository, kept out of git, so they are read from disk. It returns the page's path in the repository ("" if none).
+func (e *env) findSession(sub string) string {
+	var found string
+	_ = filepath.WalkDir(filepath.Join(e.home, "projects"), func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.Contains(d.Name(), sub) && strings.Contains(filepath.ToSlash(p), "/sessions/") {
+			rel, _ := filepath.Rel(e.home, p)
+			found = filepath.ToSlash(rel)
+		}
+		return nil
+	})
+	return found
+}
+
+// sessionPage is a session page's path in the memory repository and its text.
+func (e *env) sessionPage(sub string) (string, string) {
+	e.t.Helper()
+	rel := e.findSession(sub)
+	if rel == "" {
+		e.t.Fatalf("no session page contains %q under %s", sub, filepath.Join(e.home, "projects"))
+	}
+	return rel, e.read(filepath.Join(e.home, filepath.FromSlash(rel)))
+}
+
 // commitPage writes a page into the memory repository and commits it, the way a person (or an agent following a slash
 // command) would: plain files and plain git.
 func (e *env) commitPage(dir, repoPath, content string) {
@@ -394,7 +426,7 @@ func TestEveryCommandIsGitInTheMemoryRepository(t *testing.T) {
 	viaGit := e.git(e.home, "log", "--format=%an|%s")
 	e.eq(viaGM, viaGit)
 	e.has(viaGM, "first note")
-	e.eq(strings.TrimSpace(e.gm(elsewhere, "ls-files")), "note.md")
+	e.eq(strings.TrimSpace(e.gm(elsewhere, "ls-files")), ".gitignore\nnote.md") // the .gitignore that keeps session pages out
 	e.eq(strings.TrimSpace(e.gm(elsewhere, "rev-parse", "--show-toplevel")), e.home)
 	e.has(e.gm(elsewhere, "grep", "-n", "note"), "note.md:1:# a note")
 	e.has(e.gm(elsewhere, "show", "HEAD:note.md"), "# a note")
@@ -574,7 +606,7 @@ func TestDoctorReportsVersionAndHealth(t *testing.T) {
 
 	e.agentInit(dir)
 	rows, out := e.doctor(dir)
-	e.match(rows["Memory repository"], `^`+regexp.QuoteMeta(e.home)+` \(branch main, no commits yet\)$`)
+	e.match(rows["Memory repository"], `^`+regexp.QuoteMeta(e.home)+` \(branch main, 1 commit\)$`)
 	e.has(out, "· Remote: none: memory stays on this machine")
 	e.has(out, "✓ Uncommitted changes: none")
 	e.match(rows["Project folder"], `^projects/gm-shop-app-`)
@@ -700,13 +732,12 @@ func TestClaudeSessionCaptureCompileRecall(t *testing.T) {
 	e.hook(dir, "claude", "SessionEnd", map[string]any{"session_id": sid, "reason": "other"})
 
 	// the session is a page in the memory repository, committed there, and nowhere near the project
-	page := e.pageOf(dir, "claude-s1aaaaaa")
+	page, shown := e.sessionPage("claude-s1aaaaaa")
 	e.ok(strings.HasPrefix(page, proj+"/sessions/"), "session page outside the project's folder: "+page)
-	e.has(e.gm(dir, "log", "--format=%s"), "memory: session s1aaaaaa (claude)")
+	e.lacks(e.gm(dir, "log", "--format=%s"), "memory: session", "session pages are kept out of git")
+	e.lacks(e.tracked(dir), "claude-s1aaaaaa")
 	e.eq(e.status(dir), "")
-	e.eq(strings.TrimSpace(e.gm(dir, "status", "--porcelain")), "", "everything the hooks wrote is committed")
-
-	shown := e.gm(dir, "show", "HEAD:"+page)
+	e.eq(strings.TrimSpace(e.gm(dir, "status", "--porcelain")), "", "nothing the hooks wrote is left uncommitted")
 	e.has(shown, "Fix the flaky upload retry test")
 	e.has(shown, "Pinned the retry clock")
 	e.has(shown, "`src/upload.ts`")
@@ -745,7 +776,7 @@ func TestCopilotSessionUsesCamelCasePayloads(t *testing.T) {
 	e.hook(dir, "copilot", "agentStop", map[string]any{"sessionId": "c1", "stopReason": "end_turn"})
 	e.hook(dir, "copilot", "sessionEnd", map[string]any{"sessionId": "c1", "reason": "complete"})
 
-	shown := e.show(dir, "copilot-c1")
+	_, shown := e.sessionPage("copilot-c1")
 	e.has(shown, "add a lint script")
 	e.has(shown, "`pnpm lint` (failed)")
 	e.has(shown, "`package.json`")
@@ -764,7 +795,7 @@ func TestSessionPageStripsEditorContextAndEmptySessionsLeaveNothing(t *testing.T
 	e.hook(dir, "claude", "Stop", map[string]any{"session_id": sid, "last_assistant_message": "Added /health.\n\n- route in src/server.ts\n- test in test/health.test.ts"})
 	e.hook(dir, "claude", "SessionEnd", map[string]any{"session_id": sid})
 
-	page := e.show(dir, "pg1pg1pg")
+	_, page := e.sessionPage("pg1pg1pg")
 	e.match(page, `(?m)^# add a health endpoint$`, "the title is what the user asked, not editor context")
 	e.ok(!strings.Contains(page, "ide_") && !strings.Contains(page, "secretish"), "editor context leaked into the page")
 	e.has(page, "1 prompt(s)", "a prompt that was only context is not recorded")
@@ -775,7 +806,7 @@ func TestSessionPageStripsEditorContextAndEmptySessionsLeaveNothing(t *testing.T
 	e.hook(dir, "claude", "SessionStart", map[string]any{"session_id": "em1em1em1"})
 	e.hook(dir, "claude", "SessionEnd", map[string]any{"session_id": "em1em1em1"})
 	e.eq(e.gm(dir, "log", "--format=%H"), before)
-	e.lacks(e.tracked(dir), "em1em1em")
+	e.eq(e.findSession("em1em1em"), "", "a session where nothing was asked leaves no page")
 }
 
 // ---- what the briefing reads --------------------------------------------------------------------------------------
@@ -927,12 +958,12 @@ func TestHooksOnlyCommitTheirOwnFolder(t *testing.T) {
 	e.gm(dir, "add", "scratch/draft.md")
 
 	e.hook(dir, "claude", "SessionStart", map[string]any{"session_id": "ow1ow1ow1"})
-	e.hook(dir, "claude", "UserPromptSubmit", map[string]any{"session_id": "ow1ow1ow1", "prompt": "Add a retry to the uploader"})
+	e.hook(dir, "claude", "UserPromptSubmit", map[string]any{"session_id": "ow1ow1ow1", "prompt": "remember that the uploader retries three times"})
 	e.hook(dir, "claude", "SessionEnd", map[string]any{"session_id": "ow1ow1ow1"})
 
-	e.has(e.gm(dir, "log", "--format=%s"), "memory: session ow1ow1o")
+	e.has(e.gm(dir, "log", "--format=%s"), "memory: remember the uploader retries three times")
 	e.eq(strings.TrimSpace(e.gm(dir, "diff", "--cached", "--name-only")), "scratch/draft.md", "the user's staged work is untouched")
-	e.lacks(e.gm(dir, "ls-tree", "-r", "--name-only", "HEAD"), "scratch/", "and was not swept into a session commit")
+	e.lacks(e.gm(dir, "ls-tree", "-r", "--name-only", "HEAD"), "scratch/", "and was not swept into a hook's commit")
 }
 
 // ---- slash commands -----------------------------------------------------------------------------------------------
@@ -963,7 +994,7 @@ func TestAgentInitInstallsSlashCommands(t *testing.T) {
 	e.skipOnWindows()
 	dir := e.newRepo("cmds")
 	out := e.agentInit(dir)
-	e.has(out, "slash commands (Claude Code skills, Copilot prompt files; git-excluded): /remember /decide /recall /memories /list /promote /forget")
+	e.has(out, "slash commands (Claude Code, Copilot, Codex, Cursor, Gemini CLI; git-excluded): /remember /decide /recall /memories /list /promote /forget")
 	e.eq(e.status(dir), "", "commands must be git-excluded")
 
 	for _, name := range commandNames {
@@ -1025,8 +1056,8 @@ func TestCommandsNeverOverwriteYourOwnFiles(t *testing.T) {
 	e.ok(!e.exists(filepath.Join(none, ".claude/skills")) && !e.exists(filepath.Join(none, ".github/prompts")), "commands written despite --no-commands")
 
 	onlyClaude := e.newRepo("cmds4")
-	e.agentInit(onlyClaude, "--no-copilot")
-	e.ok(e.exists(filepath.Join(onlyClaude, ".claude/skills/recall/SKILL.md")) && !e.exists(filepath.Join(onlyClaude, ".github/prompts")), "--no-copilot")
+	e.agentInit(onlyClaude, "claude")
+	e.ok(e.exists(filepath.Join(onlyClaude, ".claude/skills/recall/SKILL.md")) && !e.exists(filepath.Join(onlyClaude, ".github/prompts")), "agent init claude wrote Copilot files")
 }
 
 // init writes each agent's always-loaded instructions: the memory layout and how to read it. Own files are kept.
@@ -1056,8 +1087,8 @@ func TestAgentInitWritesInstructions(t *testing.T) {
 	e.lacks(e.agentInit(none, "--no-instructions"), "wrote .claude/rules")
 	e.ok(!e.exists(filepath.Join(none, ".claude/rules")) && !e.exists(filepath.Join(none, ".github/instructions")), "written despite --no-instructions")
 	only := e.newRepo("instr3")
-	e.agentInit(only, "--no-copilot")
-	e.ok(e.exists(filepath.Join(only, ".claude/rules/git-memory.md")) && !e.exists(filepath.Join(only, ".github/instructions")), "--no-copilot")
+	e.agentInit(only, "claude")
+	e.ok(e.exists(filepath.Join(only, ".claude/rules/git-memory.md")) && !e.exists(filepath.Join(only, ".github/instructions")), "agent init claude wrote Copilot files")
 }
 
 // Every command line the generated files tell the agent to run must exist, and the flows they describe must work with
@@ -1571,4 +1602,136 @@ func TestListShowsEveryMemoryGroupedByWhereItLives(t *testing.T) {
 	e.has(nothing, ".git-memory: none at "+filepath.Join(outside, ".git-memory"))
 	e.has(nothing, "copilot-user:tabs.md")
 	e.lacks(nothing, "claude:")
+}
+
+// Session pages are the local record of each agent session: the memory repository's .gitignore keeps them out of git,
+// while the briefing, `list sessions` and `doctor` still read them from disk.
+func TestSessionPagesAreIgnoredByGit(t *testing.T) {
+	e := newEnv(t)
+	e.skipOnWindows()
+	const rule = "projects/*/sessions/"
+
+	// the user already has a .gitignore in the memory repository: it is kept, and the rule is added to it
+	dir := e.newRepoNoMemory("ignored")
+	e.home = filepath.Join(dir, ".git-memory")
+	e.gm(dir, "init", "-q")
+	e.eq(strings.Count(e.read(filepath.Join(e.home, ".gitignore")), rule), 1, "git-memory init writes the rule")
+	e.write(filepath.Join(e.home, ".gitignore"), "*.tmp\n")
+	e.agentInit(dir)
+	ignore := e.read(filepath.Join(e.home, ".gitignore"))
+	e.has(ignore, "*.tmp")
+	e.eq(strings.Count(ignore, rule), 1)
+	e.has(e.gm(dir, "log", "--format=%s"), "memory: keep session pages out of git")
+	e.eq(strings.TrimSpace(e.gm(dir, "status", "--porcelain", "--", ".gitignore")), "", ".gitignore is committed with the rule")
+	e.agentInit(dir) // idempotent: nothing is added or committed twice
+	e.eq(strings.Count(e.read(filepath.Join(e.home, ".gitignore")), rule), 1)
+	e.eq(strings.Count(e.gm(dir, "log", "--format=%s"), "keep session pages out of git"), 1)
+
+	// a session's page is written, but git does not see it
+	e.hook(dir, "claude", "SessionStart", map[string]any{"session_id": "ig1ig1ig1"})
+	e.hook(dir, "claude", "UserPromptSubmit", map[string]any{"session_id": "ig1ig1ig1", "prompt": "Add a health endpoint to the API"})
+	e.hook(dir, "claude", "SessionEnd", map[string]any{"session_id": "ig1ig1ig1"})
+	page, text := e.sessionPage("claude-ig1ig1ig")
+	e.has(text, "Add a health endpoint")
+	_, _, code := e.gmRaw(dir, "check-ignore", "-q", page)
+	e.eq(code, 0, "git must ignore the session page")
+	e.lacks(e.tracked(dir), "sessions/")
+	e.gm(dir, "add", ".") // even a blanket add leaves it out
+	e.lacks(e.gm(dir, "diff", "--cached", "--name-only"), "sessions/")
+	e.eq(strings.TrimSpace(e.gm(dir, "status", "--porcelain")), "")
+
+	// and everything that reads sessions still finds it
+	e.has(e.gm(dir, "list", "sessions"), "ig1ig1ig")
+	e.has(ctxOf(e.hook(dir, "claude", "SessionStart", map[string]any{"session_id": "ig2ig2ig2"})), "Recent sessions")
+	rows, _ := e.doctor(dir)
+	e.has(rows["Pages"], "1 session")
+
+	// the rule is put back by the hooks if it goes missing (a repository cloned without it, a deleted file)
+	e.write(filepath.Join(e.home, ".gitignore"), "*.tmp\n")
+	e.hook(dir, "claude", "UserPromptSubmit", map[string]any{"session_id": "ig2ig2ig2", "prompt": "another question"})
+	e.hook(dir, "claude", "Stop", map[string]any{"session_id": "ig2ig2ig2", "last_assistant_message": "done"})
+	e.eq(strings.Count(e.read(filepath.Join(e.home, ".gitignore")), rule), 1)
+	e.eq(strings.TrimSpace(e.gm(dir, "status", "--porcelain")), "")
+}
+
+// `agent init` wires the agents you name, `all` is every one, and naming none is an error.
+func TestAgentInitWiresTheAgentsYouName(t *testing.T) {
+	e := newEnv(t)
+	e.skipOnWindows()
+	claudeFiles := []string{".claude/settings.local.json", ".claude/skills/recall/SKILL.md", ".claude/rules/git-memory.md"}
+	copilotFiles := []string{".github/hooks/git-memory.json", ".github/prompts/recall.prompt.md", ".github/instructions/git-memory.instructions.md"}
+	has := func(dir string, files []string) bool {
+		for _, f := range files {
+			if !e.exists(filepath.Join(dir, f)) {
+				return false
+			}
+		}
+		return true
+	}
+	none := func(dir string, files []string) bool {
+		for _, f := range files {
+			if e.exists(filepath.Join(dir, f)) {
+				return false
+			}
+		}
+		return true
+	}
+
+	// one agent: its hooks, commands and instructions, and nothing of the other's
+	dir := e.newRepoNoMemory("pick")
+	out := e.gm(dir, "agent", "init", "copilot")
+	e.has(out, "wrote .github/hooks/git-memory.json")
+	e.lacks(out, ".claude")
+	e.ok(has(dir, copilotFiles) && none(dir, claudeFiles), "agent init copilot must wire Copilot only")
+	e.eq(e.status(dir), "")
+	e.eq(len(at(e.readJSON(filepath.Join(dir, ".github/hooks/git-memory.json")), "hooks").(map[string]any)), 6)
+
+	// doctor: the other agent was not asked for, so it is not a warning
+	_, doc := e.doctor(dir)
+	e.has(doc, "✓ Copilot hooks: 6 events")
+	e.has(doc, "· Claude Code hooks: not set up (git-memory agent init claude)")
+	e.has(doc, "✓ Slash commands: Claude Code 0/7, Copilot 7/7")
+
+	// adding the other one later keeps the first
+	e.gm(dir, "agent", "init", "claude")
+	e.ok(has(dir, copilotFiles) && has(dir, claudeFiles), "both agents wired after naming them one at a time")
+	_, doc = e.doctor(dir)
+	e.has(doc, "✓ Claude Code hooks: 7 events")
+	e.has(doc, "✓ Copilot hooks: 6 events")
+
+	// naming both, in any order and with repeats, is the same as all
+	both := e.newRepoNoMemory("both")
+	e.gm(both, "agent", "init", "copilot", "claude", "copilot")
+	e.ok(has(both, claudeFiles) && has(both, copilotFiles), "naming both agents")
+	every := e.newRepoNoMemory("every")
+	e.gm(every, "agent", "init", "all")
+	e.ok(has(every, claudeFiles) && has(every, copilotFiles), "all means every agent")
+
+	// no agent named is an error that says what to type, and nothing is written (not even the memory repository)
+	bare := e.newRepoNoMemory("bare")
+	_, errOut, code := e.gmRaw(bare, "agent", "init")
+	e.eq(code, 1)
+	e.has(errOut, "say which agent to set up: git-memory agent init <claude|copilot|codex|cursor|gemini|all>")
+	_, errOut, code = e.gmRaw(bare, "agent", "init", "--no-commands")
+	e.eq(code, 1)
+	e.has(errOut, "say which agent to set up")
+	e.ok(none(bare, claudeFiles) && none(bare, copilotFiles) && !e.exists(filepath.Join(bare, ".git-memory")), "something was written with no agent named")
+
+	// a name that is not an agent is refused before anything is written
+	typo := e.newRepoNoMemory("typo")
+	_, errOut, code = e.gmRaw(typo, "agent", "init", "windsurf")
+	e.eq(code, 1)
+	e.has(errOut, `unknown agent "windsurf" (choose: claude, copilot, codex, cursor, gemini, all)`)
+	e.ok(none(typo, claudeFiles) && none(typo, copilotFiles) && !e.exists(filepath.Join(typo, ".git-memory")), "something was written for an unknown agent")
+	_, errOut, code = e.gmRaw(typo, "agent", "init", "claude", "windsurf")
+	e.eq(code, 1)
+	e.ok(none(typo, claudeFiles), "one bad name must stop the whole command")
+
+	// the flags the argument replaced say so, instead of being ignored
+	_, errOut, code = e.gmRaw(typo, "agent", "init", "--no-claude")
+	e.eq(code, 1)
+	e.has(errOut, "--no-claude is gone: name the agents you want instead, e.g. git-memory agent init copilot")
+	_, errOut, code = e.gmRaw(typo, "agent", "init", "--no-copilot")
+	e.eq(code, 1)
+	e.has(errOut, "git-memory agent init claude")
 }

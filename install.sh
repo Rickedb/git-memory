@@ -216,7 +216,7 @@ main() {
 
 	command -v git >/dev/null 2>&1 || warn "git was not found on your PATH: git-memory runs git, so install it too"
 	say ""
-	say "Next:  cd your-project && git-memory agent init       (git-memory doctor checks everything)"
+	say "Next:  cd your-project && git-memory agent init <agent|all>       (git-memory doctor checks everything)"
 }
 
 main "$@"

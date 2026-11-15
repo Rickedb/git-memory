@@ -30,12 +30,9 @@ func handle(ag agent.Agent, rawEvent string, payload core.HookPayload) any {
 		return nil
 	}
 
-	cwd := pickStr(payload, "cwd")
-	if cwd == "" {
-		cwd, _ = os.Getwd()
-	}
+	cwd := workDir(payload)
 	s := &session{agent: ag, payload: payload, p: core.OpenProject(cwd), cfg: core.DefaultConfig(), sid: "unknown"}
-	if v := pick(payload, "session_id", "sessionId"); v != nil {
+	if v := pick(payload, "conversation_id", "session_id", "sessionId"); v != nil { // Cursor names its sessions conversations
 		s.sid = unsafeSid.ReplaceAllString(toString(v), "_")
 	}
 	s.file = spoolFile(s.p.Spool, ag.Name, s.sid)
@@ -57,6 +54,21 @@ func handle(ag agent.Agent, rawEvent string, payload core.HookPayload) any {
 	return nil
 }
 
+// workDir is the folder the agent works in: the payload's cwd, or its first workspace root (Cursor sends no cwd), or
+// where the hook was started.
+func workDir(payload core.HookPayload) string {
+	if cwd := pickStr(payload, "cwd"); cwd != "" {
+		return cwd
+	}
+	if roots, ok := pick(payload, "workspace_roots", "workspaceRoots").([]any); ok && len(roots) > 0 {
+		if r, _ := roots[0].(string); r != "" {
+			return r
+		}
+	}
+	cwd, _ := os.Getwd()
+	return cwd
+}
+
 // record appends an event to the session's spool.
 func (s *session) record(e core.Event) { appendEvent(s.p.Spool, s.agent.Name, s.sid, e) }
 
@@ -68,6 +80,7 @@ func (s *session) reason() string { return pickStr(s.payload, "reason", "trigger
 func (s *session) writePage(commit func() bool) {
 	core.RequireMemoryRepo(s.p.Mem)
 	core.WithLock(s.p.Mem, func() {
+		core.EnsureSessionsIgnored(s.p.Mem)
 		writeSessionPage(s.p, s.file)
 		if commit() {
 			core.CommitPaths(s.p.Mem, "memory: session "+core.RuneSlice(s.sid, 8)+" ("+s.agent.Name+")", s.p.DirRel())

@@ -97,6 +97,40 @@ func InitMemoryRepo(mem string) {
 	Git(mem, "init", "-q", "-b", "main")
 }
 
+// sessionsIgnoreRule keeps every project's session pages out of git.
+const sessionsIgnoreRule = "projects/*/sessions/"
+
+// IgnoreSessions makes the memory repository's .gitignore keep session pages out of git: they are the local record of
+// each agent session (the briefing, `list sessions` and `doctor` read them from disk), not memory to share. It adds
+// the rule and leaves the rest of the file alone. It reports whether it changed the file.
+func IgnoreSessions(mem string) bool {
+	file := filepath.Join(mem, ".gitignore")
+	old, _ := ReadFileTry(file)
+	for _, l := range strings.Split(old, "\n") {
+		if strings.TrimSpace(l) == sessionsIgnoreRule {
+			return false
+		}
+	}
+	sep := ""
+	if old != "" {
+		sep = "\n"
+		if !strings.HasSuffix(old, "\n") {
+			sep = "\n\n"
+		}
+	}
+	WriteFile(file, old+sep+"# git-memory: session pages are a local record of each agent session, not shared memory\n"+sessionsIgnoreRule+"\n")
+	return true
+}
+
+// EnsureSessionsIgnored is IgnoreSessions for a repository that exists: it also commits the .gitignore when it changed
+// it or when it was never committed, so the rule travels with the repository and `status` stays clean.
+func EnsureSessionsIgnored(mem string) {
+	changed := IgnoreSessions(mem)
+	if _, tracked := GitTry(mem, "ls-files", "--error-unmatch", ".gitignore"); changed || !tracked {
+		CommitPaths(mem, "memory: keep session pages out of git", ".gitignore")
+	}
+}
+
 // withLock serializes writers of the memory repository with a lock directory (mkdir is atomic, also on Windows).
 func WithLock(mem string, fn func()) {
 	if !IsMemoryRepo(mem) {

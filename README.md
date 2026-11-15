@@ -62,7 +62,7 @@ The only requirement is `git`. Having `git-memory` on your `PATH` also makes `gi
 ```bash
 cd your-project
 git-memory clone git@github.com:me/memory.git     # optional: bring an existing memory repository (into ./.git-memory)
-git-memory agent init                             # wire this project's agents to it (creates ./.git-memory if there is none)
+git-memory agent init claude                      # wire this project for Claude Code (or: copilot, codex, cursor, gemini, or all; naming none is an error). Creates ./.git-memory if there is none
 ```
 
 That is the whole setup, and **it adds nothing to your project's tracked files**: the hook wiring, the slash commands and the `.git-memory` folder itself are git-excluded (`.git/info/exclude`, not your `.gitignore`).
@@ -74,7 +74,7 @@ A plain git repository, and its location is not configurable: it is the `.git-me
 ```
 .git-memory/
   projects/<project>/
-    sessions/2026/11/2026-11-12-claude-ab12cd34.md     one page per agent session (written by the hooks)
+    sessions/2026/11/2026-11-12-claude-ab12cd34.md     one page per agent session (written by the hooks; local, kept out of git)
     memories/<kind>/<title>.md                         decisions, procedures, facts, notes
     core/<title>.md                                    pinned: opens every briefing for the project
   global/
@@ -116,11 +116,11 @@ Curating is git:
  agent hooks ──► spool (.git/git-memory/spool/*.jsonl, in the project's .git)    cheap append, ~13 ms per hook
                     │  Stop / PreCompact / SessionEnd
                     ▼
-        session page  projects/<project>/sessions/YYYY/MM/<date>-<agent>-<id>.md   committed in the memory repository
+        session page  projects/<project>/sessions/YYYY/MM/<date>-<agent>-<id>.md   a local file: the memory repository's .gitignore keeps it out of git
                     │
    SessionStart ◄───┴── briefing: pinned notes + every decision + recent memories and sessions (≤ 6 KB)
    UserPromptSubmit ◄── recall: BM25 hits for this prompt          (Claude Code only, see below)
-   the agent ◄───────── git-memory grep / show / add / commit      (both agents, via the briefing and the slash commands)
+   the agent ◄───────── git-memory grep / show / list / add / commit      (both agents, via the briefing and the slash commands)
 ```
 
 - **Capture records intent, not output.** Prompts, files edited, shell commands, failures and the agent's final message. Tool output is never stored.
@@ -134,12 +134,13 @@ Curating is git:
   ```
 
   (`remember to run the tests` is an instruction for the current task, not a memory.)
+- **Sessions stay local.** The memory repository's `.gitignore` (`projects/*/sessions/`, added by `git-memory init` and `agent init`, and restored by the hooks if it goes missing) keeps session pages out of git, so they are never committed, pushed or shared. The briefing, `git-memory list sessions` and `doctor` read them from disk. Because git does not search ignored files, `git-memory grep` does not find them: use `list sessions`. A repository that already tracks session pages keeps tracking them until you `git-memory rm -r --cached projects/<project>/sessions`.
 - **Commits are scoped.** A hook commits only its own folder, so whatever else you have staged in the memory repository stays staged.
 - **Fail-open.** A hook error is logged to the project's `.git/git-memory/errors.log` and the hook exits 0; it never blocks the agent.
 
 ## Slash commands
 
-`git-memory agent init` also installs seven commands for Claude Code (skills) and Copilot (prompt files), git-excluded like the hooks. They teach the agent to use git on the memory repository:
+`git-memory agent init` also installs seven commands for each agent you wire, in its own format (Claude Code and Codex skills, Copilot prompt files, Cursor commands, Gemini CLI commands), git-excluded like the hooks. They teach the agent to use git on the memory repository:
 
 | Command | What it does |
 | --- | --- |
@@ -172,8 +173,8 @@ git-memory list [repo|claude|copilot|sessions] [date]…
 git-memory promote <source>… --to project|global     copy or move memories into this project's folder or the global one
 git-memory demote <page>…                            the opposite: narrow a global memory to this project
 
-git-memory agent init [--no-claude] [--no-copilot] [--no-commands] [--no-instructions]
-git-memory agent hook <claude|copilot> <event>      what the agents' hook files call
+git-memory agent init <claude|copilot|codex|cursor|gemini|all>… [--no-commands] [--no-instructions]  wire this project for the agents you name (`all` = every agent; none is an error)
+git-memory agent hook <claude|copilot|codex|cursor|gemini> <event>  what the agents' hook files call
 git-memory agent version
 ```
 
@@ -183,17 +184,24 @@ The project's `.git/git-memory/gm` is the **launcher** the hook files call. On L
 
 ## Agent support
 
-| | Claude Code (CLI + VS Code extension) | GitHub Copilot (VS Code, preview) |
-| --- | --- | --- |
-| Capture prompts, edits, commands | yes | yes |
-| Briefing at session start | yes (`hookSpecificOutput.additionalContext`) | yes (`additionalContext`) |
-| Per-prompt recall injection | yes | **no**: Copilot drops `userPromptSubmitted` output for config-file hooks, so recall happens when the agent runs `git-memory grep`, as the briefing tells it to |
-| Final message captured | yes (`last_assistant_message` / transcript) | best effort via the transcript path |
+| | Claude Code (CLI + VS Code extension) | GitHub Copilot (VS Code, preview) | Codex CLI | Cursor | Gemini CLI |
+| --- | --- | --- | --- | --- | --- |
+| Hook file | `.claude/settings.local.json` | `.github/hooks/git-memory.json` | `.codex/hooks.json` | `.cursor/hooks.json` | `.gemini/settings.json` |
+| Capture prompts, edits, commands | yes | yes | yes | yes | yes |
+| Briefing at session start | yes | yes | yes | yes (`additional_context`) | yes |
+| Per-prompt recall injection | yes | **no**: Copilot drops `userPromptSubmitted` output for config-file hooks | yes | **no**: Cursor's prompt hook can only allow or block the prompt | yes (`BeforeAgent`) |
+| Final message captured | yes (`last_assistant_message` / transcript) | best effort via the transcript path | yes (`last_assistant_message`) | best effort via the transcript path | yes (`prompt_response`) |
+| Slash commands | skills | prompt files | skills (`.agents/skills`) | `.cursor/commands` | `.gemini/commands` (TOML) |
+| Always-on instructions | `.claude/rules` | `.github/instructions` | none (briefing only) | `.cursor/rules` | none (briefing only) |
+| You must also | | | trust the hooks (`/hooks`) | trust the workspace | |
 
-No instruction files are added to the project: the session-start briefing itself tells the agent how to search and store memories, which is what Copilot relies on in place of per-prompt recall. Copilot also reads `.claude/settings*.json`; duplicate events in the same second are dropped.
+Where an agent has no recall, recall happens when the agent runs `git-memory grep`, as the briefing tells it to. Codex and Gemini CLI get no instructions file because their `AGENTS.md` / `GEMINI.md` are the project's own tracked files; the session briefing carries the same guidance. Gemini CLI has no personal "local" settings file, so its hooks go into `.gemini/settings.json`: git-excluded, which only helps while that file is not tracked.
+
+The session-start briefing itself tells the agent how to search and store memories. Copilot also reads `.claude/settings*.json`; duplicate events in the same second are dropped.
 
 ## Caveats
 
+- The Codex, Cursor and Gemini CLI hooks follow each tool's published hooks reference (event names, payload fields, output shapes) and are covered by tests that replay those payloads, but none has been run against the live tool yet. Gemini CLI's docs say it is being replaced by Antigravity CLI (different hook files and events), which is not supported. Check `.git/git-memory/errors.log` if a session leaves no page.
 - The Copilot hook payloads and output shapes follow GitHub's published hooks reference. They are covered by tests that replay those payloads, but have not been run against a live VS Code Copilot session yet. Hooks are in preview there, so check `.git/git-memory/errors.log` if a session leaves no page.
 - The Windows binaries are cross-compiled and vetted, and their path, process and shell handling is written for Windows, but they have not been run on Windows yet (the end-to-end tests that drive the hooks skip on Windows for now). Unverified there: how Claude Code and Copilot run the hook `command` (the files use `"$CLAUDE_PROJECT_DIR/.git/git-memory/gm.exe" agent hook …` and `./.git/git-memory/gm.exe agent hook …`), and quoting for project paths with spaces.
 - Projects wired by an earlier development build call `gm hook <agent> <event>`. That form keeps working, and `git-memory agent init` replaces it. The config files, scopes and commands of those builds (`remember`, `search`, `sync`, `doctor`, …) are gone: the same things are git commands now.
@@ -221,7 +229,10 @@ internal/gm/hook/      what the agents' hooks run, one file per event (start, pr
                         spool, session pages, briefing, recall and "remember that …" triggers they share
 internal/gm/hook/claude/    Claude Code: its event names, its settings file, what its hooks print (recall: yes)
 internal/gm/hook/copilot/   Copilot: the same for Copilot (no failed-tool event, no recall)
-internal/gm/hook/agent/     the contract between the two: event kinds, the Agent type, recognising our own hook entries
+internal/gm/hook/codex/     Codex: the same for OpenAI Codex CLI (recall: yes)
+internal/gm/hook/cursor/    Cursor: the same for Cursor (a prompt hook cannot hand context back, so no recall)
+internal/gm/hook/gemini/    Gemini CLI: the same for Gemini CLI (recall: yes)
+internal/gm/hook/agent/     the contract between them: event kinds, the Agent type, recognising our own hook entries
 internal/gm/core/      the memory repository and pages, the plain-git helpers, redaction, settings (uses nothing else of ours)
 ```
 

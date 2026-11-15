@@ -43,7 +43,7 @@ func summarizeTool(payload core.HookPayload, root string, cfg core.Config) *core
 	input := asObject(pick(payload, "tool_input", "toolArgs", "toolInput"))
 	result := asObject(pick(payload, "tool_result", "toolResult", "tool_response"))
 	resultType := strings.ToLower(pickStr(result, "result_type", "resultType"))
-	failed := resultType == "failure" || resultType == "error" || resultType == "denied" || result["is_error"] == true
+	failed := resultType == "failure" || resultType == "error" || resultType == "denied" || result["is_error"] == true || (result["error"] != nil && result["error"] != "")
 
 	if shellTool.MatchString(tool) {
 		command := pickStr(input, "command", "cmd", "raw")
@@ -54,7 +54,7 @@ func summarizeTool(payload core.HookPayload, root string, cfg core.Config) *core
 	}
 	if editTool.MatchString(tool) {
 		cands := []any{pick(input, "file_path", "filePath", "path", "file", "notebook_path")}
-		if patch, ok := pick(input, "input", "patch", "raw").(string); ok {
+		if patch, ok := pick(input, "input", "patch", "command", "raw").(string); ok {
 			for _, m := range patchFile.FindAllStringSubmatch(patch, -1) {
 				cands = append(cands, strings.TrimSpace(m[1]))
 			}

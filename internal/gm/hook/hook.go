@@ -1,9 +1,9 @@
-// Package hook is what the agents' hooks run: it turns Claude Code and Copilot events into session pages, briefs a new
-// session from what is stored, recalls memories for a prompt and saves "remember that ..." lines. It never fails the
-// agent: errors are logged and the exit code stays 0.
+// Package hook is what the agents' hooks run: it turns Claude Code, Copilot, Codex, Cursor and Gemini CLI events into
+// session pages, briefs a new session from what is stored, recalls memories for a prompt and saves "remember that ..."
+// lines. It never fails the agent: errors are logged and the exit code stays 0.
 //
-// The engine here is shared. What differs between the agents is in their own packages (claude, copilot), and each event
-// has its own file: start, prompt, tool, stop, precompact, end.
+// The engine here is shared. What differs between the agents is in their own packages (claude, copilot, codex, cursor,
+// gemini), and each event has its own file: start, prompt, tool, stop, precompact, end.
 package hook
 
 import (
@@ -18,11 +18,14 @@ import (
 	"github.com/Rickedb/git-memory/internal/gm/core"
 	"github.com/Rickedb/git-memory/internal/gm/hook/agent"
 	"github.com/Rickedb/git-memory/internal/gm/hook/claude"
+	"github.com/Rickedb/git-memory/internal/gm/hook/codex"
 	"github.com/Rickedb/git-memory/internal/gm/hook/copilot"
+	"github.com/Rickedb/git-memory/internal/gm/hook/cursor"
+	"github.com/Rickedb/git-memory/internal/gm/hook/gemini"
 )
 
 // Agents are the agents git-memory serves, in the order `agent init` wires them.
-var Agents = []agent.Agent{claude.Agent, copilot.Agent}
+var Agents = []agent.Agent{claude.Agent, copilot.Agent, codex.Agent, cursor.Agent, gemini.Agent}
 
 // Lookup finds an agent by the name used in `agent hook <name> <event>`.
 func Lookup(name string) (agent.Agent, bool) {
@@ -48,11 +51,7 @@ func Run(name, event string) {
 	})
 	if err != nil {
 		// Hooks must never break the agent: log and exit cleanly.
-		cwd := pickStr(payload, "cwd")
-		if cwd == "" {
-			cwd, _ = os.Getwd()
-		}
-		logError(cwd, err)
+		logError(workDir(payload), err)
 	}
 }
 

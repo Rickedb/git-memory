@@ -24,6 +24,7 @@ func (s *session) start() any {
 	}
 	core.RequireMemoryRepo(s.p.Mem)
 	core.WithLock(s.p.Mem, func() {
+		core.EnsureSessionsIgnored(s.p.Mem)
 		if flushStale(s.p, s.file) > 0 {
 			core.CommitPaths(s.p.Mem, "memory: finalize earlier sessions", s.p.DirRel())
 		}

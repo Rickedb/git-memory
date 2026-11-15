@@ -22,7 +22,7 @@ This project keeps its decisions, procedures, facts and past sessions in a memor
   projects/{SLUG}/            this project
     memories/<kind>/<title>.md    kind is decision, procedure, fact or note
     core/<title>.md               pinned notes: they open every briefing
-    sessions/YYYY/MM/<date>-<agent>-<id>.md   one page per agent session; the §## Outcome§ section says what it did
+    sessions/YYYY/MM/<date>-<agent>-<id>.md   one page per agent session (a local file, kept out of git); the §## Outcome§ section says what it did
   global/                     what applies to every project (same memories/ and core/ layout)
 §§§
 
@@ -33,7 +33,7 @@ A page is markdown with a frontmatter block (§kind§, §tier§, §tags§, §cre
 The CLI is §{GM}§: it is git, run inside the memory repository, so any read-only git command works. Run it from the repository root.
 
 - A briefing is injected when a session starts: pinned notes, the decisions in force, recent notes and sessions, each with its page path. Start there.
-- Search: §{GM} grep -n -i -I -e "<keyword>" -- projects/{SLUG} global§. Try synonyms before concluding nothing is stored.
+- Search: §{GM} grep -n -i -I -e "<keyword>" -- projects/{SLUG} global§. Try synonyms before concluding nothing is stored. Past sessions are not in git, so grep does not search them: §{GM} list sessions§ lists them, and each is a plain file under §.git-memory/§.
 - Read a page: §{GM} show HEAD:<path>§, with the path from the briefing or a search hit (e.g. §projects/{SLUG}/memories/decision/use-pnpm.md§).
 - Browse: §{GM} list§ (§{GM} list sessions 2026-11§ narrows the sessions to a period), §{GM} log --oneline -n 10§ for what changed lately, §{GM} doctor --report§ for where everything lives and whether it is healthy.
 - Answer from what the pages say and cite each by its path. If nothing relevant is stored, say so; do not guess.

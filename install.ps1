@@ -182,4 +182,4 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Warning 'git was not found on your PATH: git-memory runs git, so install it too (https://git-scm.com/download/win)'
 }
 Write-Host ''
-Write-Host 'Next:  cd your-project; git-memory agent init       (git-memory doctor checks everything)'
+Write-Host 'Next:  cd your-project; git-memory agent init <agent|all>       (git-memory doctor checks everything)'

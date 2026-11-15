@@ -104,7 +104,7 @@ func buildBriefing(allPages []*core.Page, cfg core.Config, project, cli string) 
 		}
 	}
 
-	parts = append(parts, fmt.Sprintf("The memory is a git repository, and %[1]s is git run inside it (run from the project's root). %[1]s grep -n -i \"<terms>\" -- %[2]s %[3]s finds earlier decisions and sessions; %[1]s show HEAD:<path> prints a page; to store a new one, write a markdown page under %[2]s/memories/<kind>/ and commit it with %[1]s add / %[1]s commit.", cli, project, core.GlobalRel))
+	parts = append(parts, fmt.Sprintf("The memory is a git repository, and %[1]s is git run inside it (run from the project's root). %[1]s grep -n -i \"<terms>\" -- %[2]s %[3]s finds earlier decisions, procedures and facts (past sessions are local files kept out of git: %[1]s list sessions lists them, and each is a plain file under %[4]s/); %[1]s show HEAD:<path> prints a page; to store a new one, write a markdown page under %[2]s/memories/<kind>/ and commit it with %[1]s add / %[1]s commit.", cli, project, core.GlobalRel, core.MemoryFolder))
 	return core.Truncate(strings.Join(parts, "\n\n"), b.MaxChars)
 }
 

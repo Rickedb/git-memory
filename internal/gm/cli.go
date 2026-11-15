@@ -53,11 +53,12 @@ git-memory keeps five words for itself, all unknown to git:
   git-memory demote <page>...
                              the opposite: narrow a global memory to this project (moves it from global/ to the
                              project's folder).
-  git-memory agent init [--no-claude] [--no-copilot] [--no-commands] [--no-instructions]
-                             wire the project in the current directory: creates its .git-memory (if missing) and the
-                             Claude Code and Copilot hooks (session capture, briefing, recall) and slash commands.
+  git-memory agent init <claude|copilot|codex|cursor|gemini|all>... [--no-commands] [--no-instructions]
+                             wire the project in the current directory for the agents you name (all = every
+                             agent; naming none is an error): creates its .git-memory (if missing), and for each agent its hooks (session
+                             capture, briefing, recall), slash commands and instructions file.
                              Adds nothing to the project's tracked files.
-  git-memory agent hook <claude|copilot> <event>    the hook entry point (reads the event payload on stdin)
+  git-memory agent hook <agent> <event>    the hook entry point (reads the event payload on stdin)
   git-memory agent version
 
 Layout inside the memory repository:  projects/<project>/{sessions,memories}/   global/{memories}/
@@ -120,6 +121,7 @@ func route(args []string) int {
 		// init means here, as for git: a .git-memory folder in the current folder
 		mem = filepath.Join(cwd, core.MemoryFolder)
 		mkdirAllQuiet(mem)
+		core.IgnoreSessions(mem)
 		excludeFromProject(cwd)
 		if !hasInitialBranch(args) {
 			args = append(append([]string{}, args...), "-b", "main") // and no hint about git's default branch name
@@ -165,7 +167,7 @@ func runAgent(args []string) int {
 	flags, pos := core.ParseArgs(args[1:])
 	switch args[0] {
 	case "init":
-		command.AgentInit(flags)
+		command.AgentInit(flags, pos)
 	case "hook":
 		var agent, event string
 		if len(pos) > 0 {

@@ -1,6 +1,6 @@
 // Package agent is the contract between the hook engine (package hook) and the agents it serves (packages claude and
-// copilot): what an agent calls its hook events, where its hook entries live, what its hooks print to give it context.
-// Everything that differs between Claude Code and Copilot is data in one of those two packages; the engine is shared.
+// copilot, codex, cursor, gemini): what an agent calls its hook events, where its hook entries live, what its hooks print
+// to give it context. Everything that differs between the agents is data in one of those packages; the engine is shared.
 package agent
 
 import (
@@ -40,6 +40,8 @@ type Agent struct {
 	// agent loads by itself); InstructionsHeader is the frontmatter that makes the agent load it for every file ("" = none).
 	Instructions       string
 	InstructionsHeader string
+	// Note is something to tell the user after the hooks are written (a step only they can take), "" = nothing.
+	Note string
 	// Recall: its prompt hook may hand related memories back to the agent.
 	Recall bool
 	// Context is the object a hook prints on stdout to give the agent text (the briefing, a recall); nil when there is none.
@@ -104,4 +106,48 @@ func HookCommands(file string) []string {
 		}
 	}
 	return out
+}
+
+// InstallGroups writes our hook entries into a settings file in the shape Claude Code, Codex and Gemini CLI share:
+// hooks.<event> is a list of groups ({"matcher": ..., "hooks": [{"type": "command", ...}]}). Our groups from earlier runs
+// are replaced; the user's own groups and the rest of the file are kept. handler builds the entry of one command.
+func InstallGroups(file string, events []Event, command func(event string) string, handler func(command string) core.Obj) {
+	settings := core.ReadJSON(file)
+	hooks := core.AsObj(settings["hooks"])
+	for _, ev := range events {
+		kept := []any{}
+		for _, g := range AsSlice(hooks[ev.Name]) {
+			if !GroupIsOurs(g) {
+				kept = append(kept, g)
+			}
+		}
+		group := core.Obj{"hooks": []any{handler(command(ev.Name))}}
+		if ev.Matcher != "" {
+			group["matcher"] = ev.Matcher
+		}
+		hooks[ev.Name] = append(kept, group)
+	}
+	settings["hooks"] = hooks
+	core.WriteJSON(file, settings)
+}
+
+type specificOutput struct {
+	HookSpecificOutput specific `json:"hookSpecificOutput"`
+}
+
+type specific struct {
+	HookEventName     string `json:"hookEventName"`
+	AdditionalContext string `json:"additionalContext"`
+}
+
+// SpecificContext is what Claude Code and Codex read from a hook's stdout: the text, tagged with the event it answers.
+func SpecificContext(kind Kind, text string) any {
+	if text == "" {
+		return nil
+	}
+	name := "UserPromptSubmit"
+	if kind == Start {
+		name = "SessionStart"
+	}
+	return specificOutput{HookSpecificOutput: specific{HookEventName: name, AdditionalContext: text}}
 }

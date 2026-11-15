@@ -27,32 +27,11 @@ var Agent = agent.Agent{
 	Events:    events,
 	HookFiles: []string{".claude/settings.local.json", ".claude/settings.json"},
 	Recall:    true,
-	Context:   context,
+	Context:   agent.SpecificContext,
 	Command:   command,
 	Install:   install,
 	// A rules file without `paths:` frontmatter is loaded at every session start.
 	Instructions: ".claude/rules/git-memory.md",
-}
-
-type output struct {
-	HookSpecificOutput specific `json:"hookSpecificOutput"`
-}
-
-type specific struct {
-	HookEventName     string `json:"hookEventName"`
-	AdditionalContext string `json:"additionalContext"`
-}
-
-// context is what Claude Code reads from a hook's stdout: the text, tagged with the event it answers.
-func context(kind agent.Kind, text string) any {
-	if text == "" {
-		return nil
-	}
-	name := "UserPromptSubmit"
-	if kind == agent.Start {
-		name = "SessionStart"
-	}
-	return output{HookSpecificOutput: specific{HookEventName: name, AdditionalContext: text}}
 }
 
 // command runs the launcher through $CLAUDE_PROJECT_DIR, Claude's documented way, robust to a changed working directory.
@@ -62,21 +41,7 @@ func command(launcher, event string) string {
 
 // install adds one group per event to the settings' hooks, replacing ours from earlier runs and keeping the user's.
 func install(file string, command func(event string) string) {
-	settings := core.ReadJSON(file)
-	hooks := core.AsObj(settings["hooks"])
-	for _, ev := range events {
-		kept := []any{}
-		for _, g := range agent.AsSlice(hooks[ev.Name]) {
-			if !agent.GroupIsOurs(g) {
-				kept = append(kept, g)
-			}
-		}
-		group := core.Obj{"hooks": []any{core.Obj{"type": "command", "command": command(ev.Name), "timeout": 30}}}
-		if ev.Matcher != "" {
-			group["matcher"] = ev.Matcher
-		}
-		hooks[ev.Name] = append(kept, group)
-	}
-	settings["hooks"] = hooks
-	core.WriteJSON(file, settings)
+	agent.InstallGroups(file, events, command, func(c string) core.Obj {
+		return core.Obj{"type": "command", "command": c, "timeout": 30}
+	})
 }

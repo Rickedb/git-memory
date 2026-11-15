@@ -58,7 +58,10 @@ git-memory 0.0.1 · git version 2.56.0
 ✓ Pages: 1 memory and 1 session in this project, 0 global
 ✓ Claude Code hooks: 7 events
 ✓ Copilot hooks: 6 events
-✓ Slash commands: Claude Code 7/7, Copilot 7/7
+✓ Codex hooks: 6 events
+✓ Cursor hooks: 7 events
+✓ Gemini CLI hooks: 6 events
+✓ Slash commands: Claude Code 7/7, Copilot 7/7, Codex 7/7, Cursor 7/7, Gemini CLI 7/7
 ✓ Hook launcher: .git/git-memory/gm
 ✓ Binary used by hooks: /home/you/.local/bin/git-memory
 ✓ Agent activity: last hook event just now
@@ -114,7 +117,7 @@ git-memory list 2026-11-13           # a date on its own means sessions
 git-memory promote claude:feedback_tailwind.md --to project
 ```
 
-- Session pages are not memories, so a plain `list` leaves them out; ask for them with `sessions`, newest first, optionally narrowed to a year, month or day (`2026`, `2026-11`, `2026-11-13`). Each row shows the first prompt of the session as its title, and its date and agent. Pages not committed yet are listed. A retired page shows `— superseded`, a pinned one `— pinned`; for the agents' memories the note is their own description.
+- Session pages are local files, kept out of git by the memory repository's `.gitignore`, and are not memories, so a plain `list` leaves them out; ask for them with `sessions`, newest first, optionally narrowed to a year, month or day (`2026`, `2026-11`, `2026-11-13`). Each row shows the first prompt of the session as its title, and its date and agent. Pages not committed yet are listed. A retired page shows `— superseded`, a pinned one `— pinned`; for the agents' memories the note is their own description.
 - Run it from a project root. Outside a project it lists what does not depend on one: the current folder's `.git-memory` (global memories) and Copilot's user-level memory.
 - `doctor` shows how many memories each agent has; `list` shows what they are.
 
@@ -169,30 +172,37 @@ It prints what it did (`demoted global/memories/decision/use-rest.md → project
 
 Like `promote`, it runs inside a project, because "this project" is where the page goes. It uses the `.git-memory` of the project's root.
 
-### `git-memory agent init [--no-claude] [--no-copilot] [--no-commands] [--no-instructions]`
+### `git-memory agent init <claude|copilot|codex|cursor|gemini|all>… [--no-commands] [--no-instructions]`
 
-Wires **the project in the current directory** to the memory repository. Run it once per project, from inside the project.
+Wires **the project in the current directory** to the memory repository, for the agents you name: `claude` (Claude Code), `copilot` (GitHub Copilot), `codex` (OpenAI Codex CLI), `cursor` (Cursor), `gemini` (Gemini CLI), or `all` for every agent. **You must name one**: with none it fails with `say which agent to set up: git-memory agent init <claude|copilot|codex|cursor|gemini|all>` and writes nothing. Run it once per project, from inside the project; run it again with another agent's name to add that one later, and what is already there stays.
 
 ```bash
 cd your-project
-git-memory agent init                  # Claude Code + Copilot hooks, and the slash commands
-git-memory agent init --no-copilot     # Claude Code only
-git-memory agent init --no-claude      # Copilot only
-git-memory agent init --no-commands    # no slash commands
-git-memory agent init --no-instructions  # no instructions file
+git-memory agent init claude           # Claude Code only
+git-memory agent init copilot          # Copilot only
+git-memory agent init codex cursor     # any combination
+git-memory agent init claude copilot   # both
+git-memory agent init all              # every agent
+git-memory agent init claude --no-commands      # hooks and instructions, no slash commands
+git-memory agent init claude --no-instructions  # hooks and slash commands, no instructions file
 ```
 
 | Writes | What it is |
 | --- | --- |
-| `.claude/settings.local.json` | Claude Code hooks (skipped with `--no-claude`) |
-| `.github/hooks/git-memory.json` | Copilot hooks (skipped with `--no-copilot`) |
-| `.claude/skills/*`, `.github/prompts/*` | the slash commands `/remember /decide /recall /memories /list /promote /forget` (skipped with `--no-commands`) |
-| `.claude/rules/git-memory.md`, `.github/instructions/git-memory.instructions.md` | the agent's always-loaded instructions: the memory repository's folder layout and how to read it (`grep`, `show`, `list`, …) (skipped with `--no-instructions`) |
+| `.claude/settings.local.json` | Claude Code hooks (`claude`) |
+| `.github/hooks/git-memory.json` | Copilot hooks (`copilot`) |
+| `.codex/hooks.json` | Codex hooks (`codex`); Codex runs them once you trust them (`/hooks`) |
+| `.cursor/hooks.json` | Cursor hooks (`cursor`), merged with yours |
+| `.gemini/settings.json` | Gemini CLI hooks (`gemini`), merged into your settings |
+| `.claude/skills/*`, `.github/prompts/*`, `.agents/skills/*`, `.cursor/commands/*`, `.gemini/commands/*` | for each agent you named, the slash commands `/remember /decide /recall /memories /list /promote /forget` in that agent's own format: Claude Code and Codex skills, Copilot prompt files, Cursor markdown commands, Gemini CLI TOML commands (skipped with `--no-commands`) |
+| `.claude/rules/git-memory.md`, `.github/instructions/git-memory.instructions.md`, `.cursor/rules/git-memory.mdc` | for Claude Code, Copilot and Cursor, its always-loaded instructions: the memory repository's folder layout and how to read it (`grep`, `show`, `list`, …) (skipped with `--no-instructions`). Codex and Gemini CLI get none: their `AGENTS.md` and `GEMINI.md` are the project's own, tracked files, so the session briefing carries the same guidance |
 | `.git/git-memory/gm` | the launcher the hook files call (a small script that runs the installed binary) |
+
+An agent that is not wired is not an error: `doctor` shows `· Claude Code hooks: not set up (git-memory agent init claude)` while another agent is wired. `--no-claude` and `--no-copilot`, the flags this argument replaced, are refused with a message saying so.
 
 It adds nothing to your project's tracked files: everything is git-excluded or lives under `.git`. It also creates the project's `.git-memory` (git-excluded too) if there is none, and never touches one that is there, or a folder of that name that holds other files. It is safe to re-run (after upgrading, or to refresh the commands); your own hooks, settings and same-named command files are kept. Hook entries written by earlier development builds are replaced.
 
-### `git-memory agent hook <claude|copilot> <event>`
+### `git-memory agent hook <claude|copilot|codex|cursor|gemini> <event>`
 
 What the agents' hook files call. It reads the event as JSON on stdin and may print JSON for the agent. You do not run it by hand, except to test a project's wiring:
 
@@ -202,7 +212,7 @@ echo '{"cwd":"'$PWD'","session_id":"t1","prompt":"remember that this is a test"}
 git-memory log --oneline -n 3        # the memory it saved is there
 ```
 
-Events: Claude Code `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `PreCompact`, `SessionEnd`; Copilot `sessionStart`, `userPromptSubmitted`, `postToolUse`, `agentStop`, `preCompact`, `sessionEnd`. A hook never fails the agent: errors go to the project's `.git/git-memory/errors.log` and the exit code stays 0.
+Events: Claude Code `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `PreCompact`, `SessionEnd`; Copilot `sessionStart`, `userPromptSubmitted`, `postToolUse`, `agentStop`, `preCompact`, `sessionEnd`; Codex `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `PreCompact`, `SessionEnd`; Cursor `sessionStart`, `beforeSubmitPrompt`, `postToolUse`, `postToolUseFailure`, `stop`, `preCompact`, `sessionEnd`; Gemini CLI `SessionStart`, `BeforeAgent`, `AfterTool`, `AfterAgent`, `PreCompress`, `SessionEnd`. A hook never fails the agent: errors go to the project's `.git/git-memory/errors.log` and the exit code stays 0.
 
 ### `git-memory agent version`
 
@@ -225,10 +235,10 @@ No config files, no environment variables. Like git, which is "the `.git` folder
 
 ```bash
 cd your-project
-git-memory agent init
+git-memory agent init claude    # or copilot, or all
 ```
 
-That is all: it creates the project's `.git-memory`. There is nothing to configure and nothing for `git status` to show in the project. Start Claude Code or Copilot in the project and sessions are captured from then on.
+That is all: it creates the project's `.git-memory`. There is nothing to configure and nothing for `git status` to show in the project. Start your agent in the project and sessions are captured from then on.
 
 ### Use a memory repository you already have
 
@@ -237,7 +247,7 @@ On a new machine, or to start from a team's repository, clone it into the projec
 ```bash
 cd your-project
 git-memory clone git@github.com:me/memory.git      # into ./.git-memory
-git-memory agent init                               # keeps what is there, adds the hooks
+git-memory agent init claude                        # (or copilot, or all) keeps what is there, adds the hooks
 ```
 
 ### Save a memory by hand
@@ -332,7 +342,7 @@ git-memory push -u origin main
 
 # machine B: bring it down (once), into the project, then wire it
 git-memory clone git@github.com:me/memory.git
-git-memory agent init
+git-memory agent init claude    # or copilot, or all
 
 # afterwards, either machine
 git-memory pull
@@ -343,7 +353,7 @@ The hooks commit locally and never push, so you decide when memory leaves the ma
 
 ### Share with a team
 
-Use one remote per project and have everyone clone it into their copy of the project: `git-memory clone <url>`, then `git-memory agent init`. Pages for `projects/shop` are shared by everyone who works on `shop`; `global/` is shared by everyone who uses that repository. Everything in the memory repository goes to whoever can read its remote, so point a shared repository at a team-only remote, and leave the remote off for notes that should stay on your machine.
+Use one remote per project and have everyone clone it into their copy of the project: `git-memory clone <url>`, then `git-memory agent init <agent>`. Pages for `projects/shop` are shared by everyone who works on `shop`; `global/` is shared by everyone who uses that repository. Everything in the memory repository goes to whoever can read its remote, so point a shared repository at a team-only remote, and leave the remote off for notes that should stay on your machine.
 
 ### Inside the agents
 
@@ -364,10 +374,10 @@ At the start of each session the agent is briefed automatically: pinned notes, e
 | Symptom | Check |
 | --- | --- |
 | Anything looks off | `git-memory doctor` in the project: it checks the repository, the hooks, the launcher, recent activity and logged errors |
-| A session left no page | `git-memory doctor`, then `cat .git/git-memory/errors.log` in the project and `git-memory log --oneline -n 5` |
+| A session left no page | `git-memory doctor`, then `cat .git/git-memory/errors.log` in the project and `git-memory list sessions` (session pages are local files, kept out of git: `log` and `ls-files` do not show them) |
 | "no memory repository at …" | you are not in the folder that has the `.git-memory` (nothing is searched for), or it was never made: `cd` to it, or run `git-memory init` / `git-memory agent init` here |
 | "… is not a git repository" | the `.git-memory` folder exists with other files in it. Move it aside, or run `git-memory init` there if you want to track it |
-| `git-memory` is "not found" inside an agent | the hooks don't use your `PATH`; re-run `git-memory agent init` in the project to refresh `.git/git-memory/gm` |
-| You want the hooks off in a project | delete `.github/hooks/git-memory.json` and the git-memory entries in `.claude/settings.local.json`; `git-memory agent init` brings them back |
+| `git-memory` is "not found" inside an agent | the hooks don't use your `PATH`; re-run `git-memory agent init <agent>` in the project to refresh `.git/git-memory/gm` |
+| You want the hooks off in a project | delete `.github/hooks/git-memory.json` and the git-memory entries in `.claude/settings.local.json`; `git-memory agent init <agent>` brings them back |
 | Test a hook by hand | see `git-memory agent hook` above |
 | Which version? | `git-memory doctor` (first line) or `git-memory agent version` |

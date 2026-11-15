@@ -15,17 +15,18 @@ import (
 
 type healthRow struct{ status, label, detail string } // status: ok | warn | error | info
 
-// countCommands is how many generated slash commands are present.
-func countCommands(root string) (claude, copilot int) {
+// countCommands is how many generated slash commands each agent has in the project.
+func countCommands(root string, a agent.Agent) (n int) {
+	f, ok := commandFormats[a.Name]
+	if !ok {
+		return 0
+	}
 	for _, def := range commands {
-		if isGenerated(filepath.Join(root, ".claude", "skills", def.Name, "SKILL.md")) {
-			claude++
-		}
-		if isGenerated(filepath.Join(root, ".github", "prompts", def.Name+".prompt.md")) {
-			copilot++
+		if isGenerated(filepath.Join(root, filepath.FromSlash(f.path(def.Name)))) {
+			n++
 		}
 	}
-	return
+	return n
 }
 
 func ago(t time.Time) string {
@@ -102,16 +103,11 @@ func checkProject(p *core.Project, add func(status, label, detail string)) {
 	add("ok", "Project folder", p.DirRel())
 	add("ok", "Pages", fmt.Sprintf("%s and %s in this project, %d global", plural(own, "memory", "memories"), plural(sessions, "session", "sessions"), global))
 
-	hookRow := func(label string, got, want int) {
-		switch {
-		case got == 0:
-			add("warn", label, "not installed (git-memory agent init)")
-		case got < want:
-			add("warn", label, fmt.Sprintf("%d of %d events (git-memory agent init refreshes them)", got, want))
-		default:
-			add("ok", label, fmt.Sprintf("%d events", got))
-		}
+	type hookCount struct {
+		agent agent.Agent
+		got   int
 	}
+	var counts []hookCount
 	wired := 0 // our hook entries, over all agents
 	for _, a := range hook.Agents {
 		var ours []string
@@ -119,16 +115,39 @@ func checkProject(p *core.Project, add func(status, label, detail string)) {
 			ours = append(ours, agent.HookCommands(filepath.Join(p.Root, filepath.FromSlash(f)))...)
 		}
 		wired += len(ours)
-		hookRow(a.Label+" hooks", len(ours), len(a.Events))
+		counts = append(counts, hookCount{a, len(ours)})
+	}
+	for _, c := range counts {
+		label, want := c.agent.Label+" hooks", len(c.agent.Events)
+		switch {
+		case c.got == 0 && wired > 0: // the project is wired for another agent: this one was not asked for
+			add("info", label, "not set up (git-memory agent init "+c.agent.Name+")")
+		case c.got == 0:
+			add("warn", label, "not installed (git-memory agent init "+c.agent.Name+")")
+		case c.got < want:
+			add("warn", label, fmt.Sprintf("%d of %d events (git-memory agent init %s refreshes them)", c.got, want, c.agent.Name))
+		default:
+			add("ok", label, fmt.Sprintf("%d events", c.got))
+		}
 	}
 
-	cc, cp := countCommands(p.Root)
 	total := len(commands)
-	detail := fmt.Sprintf("Claude Code %d/%d, Copilot %d/%d", cc, total, cp, total)
+	var parts []string
+	installed, complete := 0, false
+	for _, a := range hook.Agents {
+		if _, ok := commandFormats[a.Name]; !ok {
+			continue
+		}
+		n := countCommands(p.Root, a)
+		installed += n
+		complete = complete || n == total
+		parts = append(parts, fmt.Sprintf("%s %d/%d", a.Label, n, total))
+	}
+	detail := strings.Join(parts, ", ")
 	switch {
-	case cc+cp == 0:
-		add("info", "Slash commands", "not installed (git-memory agent init)")
-	case cc == total || cp == total:
+	case installed == 0:
+		add("info", "Slash commands", "not installed (git-memory agent init <agent>)")
+	case complete:
 		add("ok", "Slash commands", detail)
 	default:
 		add("warn", "Slash commands", detail)
@@ -137,9 +156,9 @@ func checkProject(p *core.Project, add func(status, label, detail string)) {
 	launcher := filepath.Join(p.Data, core.WrapperName())
 	if !core.Exists(launcher) {
 		if wired > 0 { // hooks that call a launcher that is gone
-			add("error", "Hook launcher", "missing: run git-memory agent init")
+			add("error", "Hook launcher", "missing: run git-memory agent init <agent>")
 		} else {
-			add("info", "Hook launcher", "not installed (git-memory agent init)")
+			add("info", "Hook launcher", "not installed (git-memory agent init <agent>)")
 		}
 	} else {
 		add("ok", "Hook launcher", rel(launcher))
@@ -149,7 +168,7 @@ func checkProject(p *core.Project, add func(status, label, detail string)) {
 				if core.Exists(m[1]) {
 					add("ok", "Binary used by hooks", m[1])
 				} else {
-					add("error", "Binary used by hooks", fmt.Sprintf("not found: %s (re-run git-memory agent init)", m[1]))
+					add("error", "Binary used by hooks", fmt.Sprintf("not found: %s (re-run git-memory agent init <agent>)", m[1]))
 				}
 			}
 		}

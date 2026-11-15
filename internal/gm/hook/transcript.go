@@ -30,7 +30,7 @@ func textOf(c any) string {
 
 // lastAssistantText is the agent's final message: sent in the payload, or read from the tail of the transcript.
 func lastAssistantText(payload core.HookPayload) string {
-	if direct := pickStr(payload, "last_assistant_message", "lastAssistantMessage", "response"); strings.TrimSpace(direct) != "" {
+	if direct := pickStr(payload, "last_assistant_message", "lastAssistantMessage", "prompt_response", "response"); strings.TrimSpace(direct) != "" {
 		return direct
 	}
 	tp := pickStr(payload, "transcript_path", "transcriptPath")
