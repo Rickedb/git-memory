@@ -9,13 +9,14 @@ import (
 	"github.com/Rickedb/git-memory/internal/gm/core"
 )
 
-const promoteUsage = `usage: git-memory promote <source>... --to project|global
+const promoteUsage = `usage: git-memory promote <source>... --to project|scope|global
 
-  --to project   this project's folder in the memory repository (projects/<project>/)
+  --to project   this project's own memories (the memory root folder)
+  --to scope     the scope you work in (scopes/<scope>/), when one is chosen
   --to global    the folder whose memories apply to every project (global/)
 
 <source> is any of:
-  a page of the memory repository      projects/shop/memories/decision/use-rest.md   (it is moved)
+  a page of the memory repository      memories/decision/use-rest.md   (it is moved)
   an agent's own memory                claude:<file>   copilot:<file>   copilot-user:<file>   (it is copied)
   any markdown file                    ./notes/retries.md                              (it is copied)
 'git-memory doctor' lists the agents' memories it finds.`
@@ -23,7 +24,7 @@ const promoteUsage = `usage: git-memory promote <source>... --to project|global
 // runPromote copies or moves memories into the project's folder or the global one.
 func Promote(flags core.Flags, pos []string) int {
 	to := flags.Str("to")
-	if len(pos) == 0 || (to != "project" && to != "global") {
+	if len(pos) == 0 || (to != "project" && to != "scope" && to != "global") {
 		core.Fail("%s", promoteUsage)
 	}
 	cwd, _ := os.Getwd()
@@ -43,9 +44,12 @@ func Promote(flags core.Flags, pos []string) int {
 }
 
 func promoteOne(p *core.Project, arg, to string) string {
-	dest := core.GlobalRel
-	if to == "project" {
+	dest := p.GlobalRel()
+	switch to {
+	case "project":
 		dest = p.DirRel()
+	case "scope":
+		dest = needScope(p)
 	}
 	src := resolvePromoteSource(p, arg)
 	if src.repoPath != "" {
@@ -82,7 +86,7 @@ func copyPage(p *core.Project, src promoteSource, dest string) string {
 		body = strings.TrimSpace(d + "\n\n" + body)
 	}
 	rel := "memories/" + kind + "/" + core.Slugify(title, 60) + ".md"
-	target := dest + "/" + rel
+	target := core.InRoot(dest, rel)
 	if core.Exists(filepath.Join(p.Mem, filepath.FromSlash(target))) {
 		core.Fail("%s was already promoted (%s exists)", src.name+":"+src.rel, target)
 	}

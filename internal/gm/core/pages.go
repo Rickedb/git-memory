@@ -75,7 +75,11 @@ func SerializePage(meta *Meta, body string) string {
 	return strings.Join(lines, "\n")
 }
 
-func ListPages(wt, scope string) []*Page {
+func ListPages(wt, scope string) []*Page { return ListPagesIn(wt, scope) }
+
+// ListPagesIn is ListPages restricted to some folders of wt (all of it when none are named). The paths of the pages stay
+// relative to wt.
+func ListPagesIn(wt, scope string, folders ...string) []*Page {
 	var out []*Page
 	var walk func(dir string)
 	walk = func(dir string) {
@@ -102,11 +106,23 @@ func ListPages(wt, scope string) []*Page {
 			}
 		}
 	}
-	if Exists(wt) {
-		walk(wt)
+	if len(folders) == 0 {
+		folders = []string{""}
+	}
+	for _, f := range folders {
+		if dir := filepath.Join(wt, f); Exists(dir) {
+			walk(dir)
+		}
 	}
 	return out
 }
+
+// projectFolders are the folders of the project's folder that hold its pages. The memory root can also hold global/
+// (read apart) and whatever else the memory repository has, so the project's folder is never scanned as a whole.
+var projectFolders = []string{"memories", "core", "scopes", "sessions"}
+
+// ListProjectOwn reads the pages of the project's own folder (not global).
+func ListProjectOwn(p *Project) []*Page { return ListPagesIn(p.Dir(), "project", projectFolders...) }
 
 // sectionOf is the text under `## heading` up to the next `## ` heading.
 func SectionOf(body, heading string) string {
@@ -140,15 +156,27 @@ func PageTime(p *Page) int64 {
 	return 0
 }
 
-// pageRef is how a page is referred to: its path in the memory repository, e.g. projects/shop/memories/decision/use-pnpm.md.
+// pageRef is how a page is referred to: its path in the memory repository, e.g. memories/decision/use-pnpm.md.
 func PageRef(p *Page) string { return p.Repo }
 
-// listProjectPages reads the pages that apply to the project: its own folder and the global one.
+// ListProjectPages reads the pages that apply to the project: its own folder, the global one, and of its scopes only the
+// one chosen on this checkout (every scope when none is).
 func ListProjectPages(p *Project) []*Page {
+	return ListProjectPagesIn(p, func(scope string) bool { return p.Scope == "" || scope == p.Scope })
+}
+
+// ListProjectPagesIn is ListProjectPages with the scopes to read decided by the caller (a prompt can ask to read more).
+func ListProjectPagesIn(p *Project, scopeOK func(scope string) bool) []*Page {
 	var out []*Page
-	for _, d := range []struct{ dir, scope, rel string }{{p.Dir(), "project", p.DirRel()}, {p.GlobalDir(), "global", GlobalRel}} {
-		for _, pg := range ListPages(d.dir, d.scope) {
-			pg.Repo = d.rel + "/" + pg.Path
+	for _, d := range []struct {
+		pages []*Page
+		rel   string
+	}{{ListProjectOwn(p), p.DirRel()}, {ListPages(p.GlobalDir(), "global"), p.GlobalRel()}} {
+		for _, pg := range d.pages {
+			if s := ScopeOf(pg.Path); s != "" && !scopeOK(s) {
+				continue // another scope of the project: it is in the repository, and not read
+			}
+			pg.Repo = InRoot(d.rel, pg.Path)
 			out = append(out, pg)
 		}
 	}

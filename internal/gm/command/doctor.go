@@ -29,6 +29,14 @@ func countCommands(root string, a agent.Agent) (n int) {
 	return n
 }
 
+// folderShown is a folder of the memory repository as the doctor writes it: "." for the repository's top.
+func folderShown(rel string) string {
+	if rel == "" {
+		return "."
+	}
+	return rel
+}
+
 func ago(t time.Time) string {
 	m := int(time.Since(t).Minutes() + 0.5)
 	switch {
@@ -100,7 +108,23 @@ func checkProject(p *core.Project, add func(status, label, detail string)) {
 			own++
 		}
 	}
-	add("ok", "Project folder", p.DirRel())
+	add("ok", "Project folder", folderShown(p.DirRel())+" (the project's memories: memories/, core/, scopes/, sessions/)")
+	scopes := p.Scopes()
+	switch {
+	case p.Scope != "":
+		note := "local to this checkout; the project's other scopes are not read"
+		if !core.Exists(filepath.Join(p.Dir(), "scopes", p.Scope)) {
+			note += "; its folder is made with its first memory"
+		}
+		add("ok", "Scope", p.Scope+" ("+note+")")
+	case len(scopes) > 0:
+		add("info", "Scope", "none chosen: every scope is read ("+strings.Join(scopes, ", ")+"; git-memory agent scope <name> chooses one)")
+	}
+	add("ok", "Write folder", folderShown(p.WriteRel())+" (where new memories go)")
+	add("ok", "Read folders", strings.Join(p.ReadPaths(), " "))
+	if p.AutoCommitOn {
+		add("ok", "Auto commit", "on ("+core.RootFile+"): every change under "+folderShown(p.DirRel())+" is committed when a session starts, a turn ends or a session ends")
+	}
 	add("ok", "Pages", fmt.Sprintf("%s and %s in this project, %d global", plural(own, "memory", "memories"), plural(sessions, "session", "sessions"), global))
 
 	type hookCount struct {
@@ -233,7 +257,7 @@ func atoi(s string) int {
 }
 
 // runDoctor prints the version and a health report. It exits 1 when something is broken, unless --report is given
-// (what the /memories slash command uses, so a warning can never abort the block it injects).
+// (what the /memory-status slash command uses, so a warning can never abort the block it injects).
 func Doctor(flags core.Flags, version string) int {
 	var rows []healthRow
 	add := func(status, label, detail string) { rows = append(rows, healthRow{status, label, detail}) }
@@ -254,11 +278,24 @@ func Doctor(flags core.Flags, version string) int {
 		mem = p.Mem
 	}
 	checkMemory(mem, add)
+	base := ""
 	if core.IsMemoryRepo(mem) {
-		add("ok", "Global folder", core.GlobalRel+" (memories that apply to every project)")
+		if err := core.Catch(func() { base = core.RootFolder(mem) }); err != nil {
+			add("error", "Root folder", err.Error())
+			projectErr = err
+		} else if base == "" {
+			add("ok", "Root folder", "./ (the repository's root; the project's "+core.RootFile+" names another folder)")
+		} else if core.DirIsEmpty(filepath.Join(mem, filepath.FromSlash(base))) {
+			add("info", "Root folder", base+" (empty or not there yet: it is made with the first memory)")
+		} else {
+			add("ok", "Root folder", base+" ("+core.RootFile+")")
+		}
+		add("ok", "Global folder", core.InRoot(base, "global")+" (memories apart from the project's own, read in every scope)")
 	}
-	if projectErr != nil {
+	if projectErr != nil && !strings.Contains(projectErr.Error(), core.RootFile) {
 		add("info", "Project", "not inside a git project: run doctor from a project to check how it is wired")
+	} else if projectErr != nil {
+		add("info", "Project", "not checked until "+core.RootFile+" is fixed")
 	} else {
 		checkProject(p, add)
 	}

@@ -28,7 +28,7 @@ var (
 //	decision: use pnpm, never npm             #decision …
 //	#fact the API listens on 8080             #procedure …
 //
-// (`remember to run the tests` is an instruction for the current task, not a memory.) The `/remember`-style forms are
+// (`remember to run the tests` is an instruction for the current task, not a memory.) The `/memory-remember`-style forms are
 // deliberately not markers: they are real slash commands (see slash.go), handled by the agent.
 func triggersIn(prompt string) []candidate {
 	var out []candidate

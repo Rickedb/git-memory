@@ -26,9 +26,12 @@ func (s *session) start() any {
 	core.WithLock(s.p.Mem, func() {
 		core.EnsureSessionsIgnored(s.p.Mem)
 		if flushStale(s.p, s.file) > 0 {
-			core.CommitPaths(s.p.Mem, "memory: finalize earlier sessions", s.p.DirRel())
+			if paths := s.p.OwnPaths(); len(paths) > 0 {
+				core.CommitPaths(s.p.Mem, "memory: finalize earlier sessions", paths...)
+			}
 		}
+		s.p.AutoCommit()
 	})
 	purgeOld(s.p.Spool, 14)
-	return s.agent.Context(agent.Start, buildBriefing(core.ListProjectPages(s.p), s.cfg, s.p.DirRel(), launcherCLI()))
+	return s.agent.Context(agent.Start, buildBriefing(core.ListProjectPages(s.p), s.cfg, s.p, launcherCLI()))
 }

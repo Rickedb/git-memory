@@ -11,13 +11,14 @@ import (
 	"github.com/Rickedb/git-memory/internal/gm/core"
 )
 
-const listUsage = `usage: git-memory list [repo|claude|copilot|sessions] [YYYY[-MM[-DD]]]...
+const listUsage = `usage: git-memory list [repo|claude|copilot|sessions] [YYYY[-MM[-DD]]]... [--all-scopes]
 
 Lists every memory there is for the project you are in, grouped by where it lives:
   repo      the memory repository (.git-memory): this project's memories and the global ones
   claude    Claude Code's own memory for this project
   copilot   Copilot's own memory: this workspace's and yours
   sessions  this project's session pages (the record of each agent session), newest first
+With a scope chosen on this checkout, only that scope is listed; --all-scopes lists every one.
 With no argument, the memories of all of them (sessions are not memories, so only when asked for).
 A date (a year, a month or a day) keeps the sessions of that period; on its own it means 'sessions'.
 Each row ends with the name 'git-memory promote' takes (a session's is its page path).`
@@ -30,7 +31,7 @@ type listRow struct{ kind, title, ref, note string }
 
 // runList prints the memories of the memory repository and of the agents, read-only. Outside a project it lists what does
 // not depend on one: the global memories and Copilot's user-level memory.
-func List(_ core.Flags, pos []string) int {
+func List(flags core.Flags, pos []string) int {
 	want := map[string]bool{}
 	date := ""
 	for _, w := range pos {
@@ -59,8 +60,13 @@ func List(_ core.Flags, pos []string) int {
 		} else {
 			if p != nil {
 				listGroup(".git-memory · this project", p.DirRel(), repoRows(p.Dir(), p.DirRel()))
+				for _, name := range scopesOf(p, flags.Has("all-scopes")) { // the chosen scope only, or every one when none is chosen
+					rel := p.Rel("scopes/" + name)
+					listGroup(".git-memory · scope "+name, rel, repoRows(filepath.Join(p.Dir(), "scopes", name), rel))
+				}
 			}
-			listGroup(".git-memory · global", "", repoRows(filepath.Join(mem, core.GlobalRel), core.GlobalRel))
+			global := core.InRoot(core.RootFolder(mem), "global")
+			listGroup(".git-memory · global", "", repoRows(filepath.Join(mem, filepath.FromSlash(global)), global))
 		}
 	}
 	if want["sessions"] {
@@ -71,7 +77,7 @@ func List(_ core.Flags, pos []string) int {
 			if date != "" {
 				label += " " + date
 			}
-			listGroupAs(label, p.DirRel()+"/sessions", sessionRows(p.Dir(), p.DirRel(), date), "session", "sessions")
+			listGroupAs(label, p.Rel("sessions"), sessionRows(p.Dir(), p.DirRel(), date), "session", "sessions")
 		}
 	}
 	for _, s := range agentSources(root) {
@@ -94,11 +100,8 @@ func List(_ core.Flags, pos []string) int {
 // repoRows reads the memories (not the session pages) of one folder of the memory repository, committed or not.
 func repoRows(dir, rel string) []listRow {
 	var rows []listRow
-	for _, pg := range core.ListPages(dir, "") {
-		if !strings.HasPrefix(pg.Path, "memories/") && !strings.HasPrefix(pg.Path, "core/") {
-			continue
-		}
-		row := listRow{kind: pg.Kind, title: pg.Title, ref: rel + "/" + pg.Path}
+	for _, pg := range core.ListPagesIn(dir, "", "memories", "core") {
+		row := listRow{kind: pg.Kind, title: pg.Title, ref: core.InRoot(rel, pg.Path)}
 		if pg.Tier == "core" {
 			row.note = "pinned"
 		}
@@ -114,10 +117,7 @@ func repoRows(dir, rel string) []listRow {
 // A session page is named <year>-<month>-<day>-<agent>-<id>.md, so the date is in the file name.
 func sessionRows(dir, rel, date string) []listRow {
 	var rows []listRow
-	for _, pg := range core.ListPages(dir, "") {
-		if !strings.HasPrefix(pg.Path, "sessions/") {
-			continue
-		}
+	for _, pg := range core.ListPagesIn(dir, "", "sessions") {
 		base := filepath.Base(pg.Path)
 		if date != "" && !strings.HasPrefix(base, date) {
 			continue
@@ -129,7 +129,7 @@ func sessionRows(dir, rel, date string) []listRow {
 		if a := pg.Meta.Str("agent"); a != "" {
 			note += " · " + a
 		}
-		rows = append(rows, listRow{kind: "session", title: pg.Title, ref: rel + "/" + pg.Path, note: note})
+		rows = append(rows, listRow{kind: "session", title: pg.Title, ref: core.InRoot(rel, pg.Path), note: note})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ref > rows[j].ref })
 	return rows
@@ -186,4 +186,13 @@ func listGroupAs(label, where string, rows []listRow, one, many string) {
 		out(line)
 	}
 	out()
+}
+
+// scopesOf are the scopes of the project whose memories are listed: the one chosen, or all that exist when none is (or
+// when asked for).
+func scopesOf(p *core.Project, all bool) []string {
+	if p.Scope != "" && !all {
+		return []string{p.Scope}
+	}
+	return p.Scopes()
 }

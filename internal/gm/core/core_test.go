@@ -123,3 +123,30 @@ func TestMarshalJSONDoesNotEscapeHTML(t *testing.T) {
 		t.Errorf("got %s", got)
 	}
 }
+
+func TestAPromptCanAskToReadBeyondTheScope(t *testing.T) {
+	scopes := []string{"checkout", "search", "mobile-app"}
+	for prompt, want := range map[string]string{
+		"what did we decide across all scopes?":    "all",
+		"Look in every scope for the retry policy": "all",
+		"any scope will do":                        "all",
+		"ignore the scope and search everything":   "all",
+		"how does it work in the search scope?":    "search",
+		"scope: mobile-app, what caches?":          "mobile-app",
+		"what about the Mobile-App scope":          "mobile-app",
+		"how does the search work":                 "",
+		"scopes are a nice idea":                   "",
+		"what is the scope of this change?":        "",
+		"how does the nonexistent scope behave?":   "",
+		"the checkout scope and the search scope":  "checkout,search",
+	} {
+		all, names := ScopesAsked(prompt, scopes)
+		got := strings.Join(names, ",")
+		if all {
+			got = "all"
+		}
+		if got != want {
+			t.Errorf("ScopesAsked(%q) = %q, want %q", prompt, got, want)
+		}
+	}
+}

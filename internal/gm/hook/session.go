@@ -83,7 +83,10 @@ func (s *session) writePage(commit func() bool) {
 		core.EnsureSessionsIgnored(s.p.Mem)
 		writeSessionPage(s.p, s.file)
 		if commit() {
-			core.CommitPaths(s.p.Mem, "memory: session "+core.RuneSlice(s.sid, 8)+" ("+s.agent.Name+")", s.p.DirRel())
+			if paths := s.p.OwnPaths(); len(paths) > 0 {
+				core.CommitPaths(s.p.Mem, "memory: session "+core.RuneSlice(s.sid, 8)+" ("+s.agent.Name+")", paths...)
+			}
 		}
+		s.p.AutoCommit() // autoCommit: anything else that changed under the memory (global, hand edits, other pages)
 	})
 }

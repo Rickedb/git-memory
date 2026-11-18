@@ -46,7 +46,7 @@ func firstN(pages []*core.Page, n int) []*core.Page {
 // buildBriefing is the bounded context injected at session start, built from the active pages of every scope. It is
 // written as plain facts, not commands. Pinned (core) pages come first, then every decision, then recent
 // procedures/facts/notes and sessions.
-func buildBriefing(allPages []*core.Page, cfg core.Config, project, cli string) string {
+func buildBriefing(allPages []*core.Page, cfg core.Config, p *core.Project, cli string) string {
 	pages := filterPages(allPages, core.IsActive)
 	if len(pages) == 0 {
 		return ""
@@ -104,7 +104,11 @@ func buildBriefing(allPages []*core.Page, cfg core.Config, project, cli string) 
 		}
 	}
 
-	parts = append(parts, fmt.Sprintf("The memory is a git repository, and %[1]s is git run inside it (run from the project's root). %[1]s grep -n -i \"<terms>\" -- %[2]s %[3]s finds earlier decisions, procedures and facts (past sessions are local files kept out of git: %[1]s list sessions lists them, and each is a plain file under %[4]s/); %[1]s show HEAD:<path> prints a page; to store a new one, write a markdown page under %[2]s/memories/<kind>/ and commit it with %[1]s add / %[1]s commit.", cli, project, core.GlobalRel, core.MemoryFolder))
+	scope := ""
+	if p.Scope != "" {
+		scope = fmt.Sprintf(" You are working in the scope \"%s\": only its memories, the project's own and the global ones are read (the project's other scopes are in the repository and left out), and new memories go to %s. Stay in it: look beyond it only when the user asks in that request (\"all scopes\", or naming another scope), then search %s (every scope), or that scope's folder %s. To write into another scope for one request, run %s agent scope <name>, do the work, and put it back with %s agent scope %s.", p.Scope, p.ScopeRel(), strings.Join([]string{p.Rel("memories"), p.Rel("core"), p.Rel("scopes")}, " "), p.Rel("scopes/<name>"), cli, cli, p.Scope)
+	}
+	parts = append(parts, fmt.Sprintf("The memory is a git repository, and %[1]s is git run inside it (run from the project's root).%[5]s %[1]s grep -n -i \"<terms>\" -- %[2]s finds earlier decisions, procedures and facts (past sessions are local files kept out of git: %[1]s list sessions lists them, and each is a plain file under %[4]s/); %[1]s show HEAD:<path> prints a page; to store a new one, write a markdown page under %[3]s/ and commit it with %[1]s add / %[1]s commit.", cli, strings.Join(p.ReadPaths(), " "), core.InRoot(p.WriteRel(), "memories/<kind>"), core.MemoryFolder, scope))
 	return core.Truncate(strings.Join(parts, "\n\n"), b.MaxChars)
 }
 

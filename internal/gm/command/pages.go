@@ -93,29 +93,57 @@ func resolveSource(p *core.Project, arg string, keep func(repoPath string) bool)
 	return promoteSource{repoPath: pickOne(pages, arg, "page in the memory repository")}
 }
 
-// folderOf is the folder of the memory repository a page lives in: a project's, or global.
-func folderOf(repoPath string) string {
-	if strings.HasPrefix(repoPath, core.GlobalRel+"/") {
-		return core.GlobalRel
+// needScope is the active scope's folder, or an error saying how to choose one.
+func needScope(p *core.Project) string {
+	if p.Scope == "" {
+		core.Fail("no scope is chosen on this checkout: git-memory agent scope <name> chooses one")
 	}
-	if rest, ok := strings.CutPrefix(repoPath, "projects/"); ok {
-		if name, _, ok := strings.Cut(rest, "/"); ok && name != "" {
-			return "projects/" + name
+	return p.ScopeRel()
+}
+
+// folderOf is the folder of the memory repository a page lives in: the project's own, one of its scopes, or global. It
+// reports false for a file that is not a memory page (the folder can be "" when the memory root is the repository's top).
+func folderOf(p *core.Project, repoPath string) (string, bool) {
+	if strings.HasPrefix(repoPath, p.GlobalRel()+"/") {
+		return p.GlobalRel(), true
+	}
+	rest := repoPath
+	if p.Base != "" {
+		var ok bool
+		if rest, ok = strings.CutPrefix(repoPath, p.Base+"/"); !ok {
+			return "", false
 		}
 	}
-	return ""
+	first, inside, _ := strings.Cut(rest, "/")
+	switch first {
+	case "memories", "core":
+		return p.DirRel(), true
+	case "scopes":
+		if name, _, ok := strings.Cut(inside, "/"); ok && name != "" {
+			return p.Rel("scopes/" + name), true
+		}
+	}
+	return "", false
+}
+
+// below is a page's path inside the folder it lives in.
+func below(folder, repoPath string) string {
+	if folder == "" {
+		return repoPath
+	}
+	return strings.TrimPrefix(repoPath, folder+"/")
 }
 
 // movePage moves a page of the memory repository to another folder and commits the move.
 func movePage(p *core.Project, repoPath, dest, to, verb string) string {
-	from := folderOf(repoPath)
-	if from == "" {
-		core.Fail("%s is not a page of a project or of the global folder", repoPath)
+	from, ok := folderOf(p, repoPath)
+	if !ok {
+		core.Fail("%s is not a memory page of this project or of the global folder", repoPath)
 	}
 	if from == dest {
-		core.Fail("%s is already in %s", repoPath, dest)
+		core.Fail("%s is already in %s", repoPath, core.InRoot(dest, ""))
 	}
-	target := dest + "/" + strings.TrimPrefix(repoPath, from+"/")
+	target := core.InRoot(dest, below(from, repoPath))
 	srcAbs := filepath.Join(p.Mem, filepath.FromSlash(repoPath))
 	dstAbs := filepath.Join(p.Mem, filepath.FromSlash(target))
 	if core.Exists(dstAbs) {

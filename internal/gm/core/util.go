@@ -278,8 +278,8 @@ func (f Flags) Has(k string) bool {
 }
 
 var booleanFlags = map[string]bool{
-	"core": true, "json": true, "quiet": true, "help": true, "branch": true, "personal": true, "local": true,
-	"shared": true, "all": true, "report": true, "no-commands": true, "no-instructions": true,
+	"core": true, "json": true, "quiet": true, "help": true, "branch": true, "personal": true, "local": true, "continue": true, "abort": true,
+	"shared": true, "all": true, "report": true, "no-commands": true, "no-instructions": true, "all-scopes": true, "clear": true,
 }
 
 func ParseArgs(argv []string) (Flags, []string) {

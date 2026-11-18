@@ -8,6 +8,6 @@ func (s *session) stop() {
 	last := core.Clean(lastAssistantText(s.payload), s.cfg.Capture.MaxOutcomeChars)
 	s.record(core.Event{Ev: "stop", Last: last})
 	s.writePage(func() bool {
-		return core.LastCommitAgeSec(s.p.Mem, s.p.DirRel()) >= int64(s.cfg.DebounceCommitSec)
+		return core.LastCommitAgeSec(s.p.Mem, s.p.Spec()) >= int64(s.cfg.DebounceCommitSec)
 	})
 }

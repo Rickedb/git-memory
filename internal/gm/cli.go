@@ -35,7 +35,7 @@ const helpText = `git-memory: git, pointed at your memory repository
                              project's git status). Also the way to use a .git-memory that already has files in it.
   git-memory clone <url>     use an existing memory repository: clones it into .git-memory in the current folder
 
-git-memory keeps five words for itself, all unknown to git:
+git-memory keeps six words for itself, all unknown to git:
 
   git-memory doctor [--report]
                              the version, and the health of the memory repository and of the project you are in:
@@ -46,22 +46,37 @@ git-memory keeps five words for itself, all unknown to git:
                              every memory there is for this project, grouped by where it lives: the memory
                              repository (this project's and the global ones), Claude Code's own memory and Copilot's.
                              Each row ends with the name promote takes.
-  git-memory promote <source>... --to project|global
+  git-memory promote <source>... --to project|scope|global
                              copy or move memories into this project's folder or the global one. A <source> is a page
                              of the memory repository (moved), or an agent's own memory (claude:<file>, copilot:<file>,
                              copilot-user:<file>) or any markdown file (copied; the original stays where it is).
-  git-memory demote <page>...
+  git-memory demote <page>... [--to project|scope]
                              the opposite: narrow a global memory to this project (moves it from global/ to the
                              project's folder).
-  git-memory agent init <claude|copilot|codex|cursor|gemini|all>... [--no-commands] [--no-instructions]
+  git-memory sync [--no-push] | --continue | --abort
+                             share your memory with the team: fetches the remote, merges the default branch (main)
+                             into your branch (named after your git user name, the one your commits go to) and
+                             pushes it to main. A conflict stops the merge: resolve the files, git-memory add
+                             them, git-memory sync --continue. (The /memory-sync command settles them for you.)
+  git-memory agent init <claude|copilot|codex|cursor|gemini|all>... [--root <folder>] [--scope <name>|--no-scope] [--no-commands] [--no-instructions]
                              wire the project in the current directory for the agents you name (all = every
                              agent; naming none is an error): creates its .git-memory (if missing), and for each agent its hooks (session
-                             capture, briefing, recall), slash commands and instructions file.
-                             Adds nothing to the project's tracked files.
+                             capture, briefing, recall), slash commands and instructions file. --root names
+                             the folder of the memory repository that holds the memories (written to the
+                             project's .git-memory.json, which you commit with the project; default: the
+                             repository's top). --scope chooses the scope
+                             (a part of the project, e.g. a module) this checkout reads and writes: the others
+                             stay in the repository, unread (local to the checkout, never committed).
+                             Adds nothing to the project's tracked files, but .git-memory.json when --root is given.
+  git-memory agent scope [<name>|--clear]
+                             choose the scope (a part of the project, e.g. a module) this checkout works in, or
+                             show it. Only its memories, the project's and the global ones are read; the others
+                             stay in the repository, unread. A prompt can read beyond it ("across all scopes").
   git-memory agent hook <agent> <event>    the hook entry point (reads the event payload on stdin)
   git-memory agent version
 
-Layout inside the memory repository:  projects/<project>/{sessions,memories}/   global/{memories}/
+Layout inside the memory repository:  {memories,core,sessions,scopes/<scope>/memories}/   global/{memories}/
+  (at its top, or inside the folder named by "root" in the project's .git-memory.json)
 There is nothing to configure: the .git-memory folder you are in is the setting, as .git is for git.
 `
 
@@ -73,7 +88,7 @@ func out(a ...any) { fmt.Println(a...) }
 // `git help -a`), so nothing a user types for git is ever intercepted.
 const agentWord = "agent"
 
-var ownWords = []string{agentWord, "doctor", "list", "promote", "demote"}
+var ownWords = []string{agentWord, "doctor", "list", "promote", "demote", "sync"}
 
 // optionsWithValue are git's global options whose value is the next argument.
 var optionsWithValue = map[string]bool{"-C": true, "-c": true, "--git-dir": true, "--work-tree": true, "--namespace": true}
@@ -168,6 +183,8 @@ func runAgent(args []string) int {
 	switch args[0] {
 	case "init":
 		command.AgentInit(flags, pos)
+	case "scope":
+		command.AgentScope(flags, pos)
 	case "hook":
 		var agent, event string
 		if len(pos) > 0 {
@@ -180,7 +197,7 @@ func runAgent(args []string) int {
 	case "version":
 		out("git-memory " + displayVersion())
 	default:
-		core.Fail(`unknown command "%s %s" (try: %s init | hook | version)`, agentWord, args[0], agentWord)
+		core.Fail(`unknown command "%s %s" (try: %s init | scope | hook | version)`, agentWord, args[0], agentWord)
 	}
 	return 0
 }
@@ -215,6 +232,9 @@ func Main(args []string) (code int) {
 	case args[0] == "demote":
 		flags, pos := core.ParseArgs(args[1:])
 		return command.Demote(flags, pos)
+	case args[0] == "sync":
+		flags, pos := core.ParseArgs(args[1:])
+		return command.Sync(flags, pos)
 	case args[0] == "hook" && len(args) > 2 && (args[1] == "claude" || args[1] == "copilot"):
 		// The hook entry point of earlier development builds (hook files written by an older `init`). `git hook` only knows `run`,
 		// so these two agent names cannot be a git command; keeping them stops old projects' hooks from failing.

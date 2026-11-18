@@ -14,6 +14,7 @@ import (
 type initResult struct {
 	Written  []string
 	Mem      string
+	Branch   string // the branch the user's memory commits go to
 	MemNote  string // why the memory repository could not be created now, if it could not
 	Commands commandsResult
 	// Instructions are the files that tell each agent how to read the memories; InstructionsSkipped are the user's own.
@@ -68,14 +69,34 @@ func wireProject(base core.BaseLoc, flags core.Flags, agents []agent.Agent) init
 	}
 	commandCli := "./" + rel(launcher)
 	installLauncher(launcher)
+	res := initResult{}
+	// The scope is this checkout's own choice: a file under .git, never committed.
+	switch {
+	case flags.Has("scope"):
+		core.SetScope(base.Data, flags.Str("scope"))
+		res.Written = append(res.Written, rel(filepath.Join(base.Data, core.ScopeFile))+"   (the scope this checkout works in; local, never committed)")
+	case flags.Has("no-scope"):
+		core.SetScope(base.Data, "")
+		res.Written = append(res.Written, "no scope: every scope is read")
+	}
 
-	res := initResult{Mem: core.MemoryDirFor(base.Root)}
+	res.Mem = core.MemoryDirFor(base.Root)
 	core.ExcludeLocally(base, "/"+core.MemoryFolder+"/")
 	if err := core.Catch(func() {
 		core.InitMemoryRepo(res.Mem)
+		res.Branch, _ = core.EnsureUserBranch(res.Mem) // before anything is committed: every commit is the user's own
+		if flags.Has("root") {                         // before anything is written into the root folder
+			core.SetRootFolder(res.Mem, flags.Str("root"))
+			res.Written = append(res.Written, core.RootFile+"   (the memory root folder; commit it with the project)")
+		}
 		core.EnsureSessionsIgnored(res.Mem)
 	}); err != nil {
 		res.MemNote = err.Error()
+	}
+
+	root := ""
+	if core.IsMemoryRepo(res.Mem) {
+		root = core.RootFolder(res.Mem) // fails before anything else is written if the setting is not a folder
 	}
 
 	// Each agent writes its own hook entries, in its own file, calling the launcher the way it can (see package hook).
@@ -87,8 +108,12 @@ func wireProject(base core.BaseLoc, flags core.Flags, agents []agent.Agent) init
 	}
 	// The instructions file is what the agent loads on its own, so it knows where the memories are and how to read them.
 	if !flags.Has("no-instructions") {
-		slug := core.OpenProject(base.Root).Slug
-		res.Instructions, res.InstructionsSkipped = installInstructions(base, commandCli, slug, agents)
+		pr := core.OpenProject(base.Root)
+		who := agents
+		if flags.Has("scope") || flags.Has("no-scope") { // the instructions of the agents already wired name the scope too
+			who = withInstructions(base, agents)
+		}
+		res.Instructions, res.InstructionsSkipped = installInstructions(base, commandCli, root, pr.Scope, who)
 	}
 	// The command files may be committed, so they read the same on every machine (see slash.go).
 	if !flags.Has("no-commands") {
@@ -106,6 +131,22 @@ func AgentInit(flags core.Flags, names []string) {
 		}
 	}
 	agents := chooseAgents(names)
+	if flags.Has("scope") && flags.Has("no-scope") {
+		core.Fail("--scope and --no-scope together: choose one")
+	}
+	if flags.Has("scope") {
+		if flags.Str("scope") == "" {
+			core.Fail("--scope needs a name, like --scope checkout")
+		}
+		core.NormalizeScope(flags.Str("scope")) // refuse a bad one before anything is written
+	}
+	if flags.Has("root") {
+		root := flags.Str("root")
+		if root == "" {
+			core.Fail("--root needs a folder of the memory repository, like --root docs/memory")
+		}
+		core.NormalizeRoot(root) // refuse a bad one before anything is written
+	}
 	cwd, _ := os.Getwd()
 	r := wireProject(core.Locate(cwd), flags, agents)
 	for _, f := range r.Written {
@@ -123,6 +164,9 @@ func AgentInit(flags core.Flags, names []string) {
 		}
 	}
 	out("\nmemory repository: " + r.Mem + "   (git-memory <git command> works on it)")
+	if r.Branch != "" {
+		out("memory branch: " + r.Branch + "   (your commits go here; git-memory sync merges them with the team's and shares them)")
+	}
 	if r.MemNote != "" {
 		out("note: " + r.MemNote)
 	}

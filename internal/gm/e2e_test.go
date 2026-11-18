@@ -271,7 +271,17 @@ func (e *env) project(dir string) string {
 	if rows["Project folder"] == "" {
 		e.t.Fatalf("doctor printed no project folder:\n%s", out)
 	}
-	return rows["Project folder"]
+	return projectPrefix(rows["Project folder"])
+}
+
+// projectPrefix turns the doctor's "Project folder" row into what goes in front of a page path in the memory repository:
+// nothing at the repository's top, else the root folder and a slash.
+func projectPrefix(row string) string {
+	folder, _, _ := strings.Cut(row, " (")
+	if folder == "." || folder == "" {
+		return ""
+	}
+	return folder + "/"
 }
 
 // pages lists the files the memory repository tracks, as `git-memory ls-files` does.
@@ -296,7 +306,7 @@ func (e *env) show(dir, sub string) string { return e.gm(dir, "show", "HEAD:"+e.
 // repository, kept out of git, so they are read from disk. It returns the page's path in the repository ("" if none).
 func (e *env) findSession(sub string) string {
 	var found string
-	_ = filepath.WalkDir(filepath.Join(e.home, "projects"), func(p string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(e.home, func(p string, d os.DirEntry, err error) error {
 		if err == nil && !d.IsDir() && strings.Contains(d.Name(), sub) && strings.Contains(filepath.ToSlash(p), "/sessions/") {
 			rel, _ := filepath.Rel(e.home, p)
 			found = filepath.ToSlash(rel)
@@ -311,7 +321,7 @@ func (e *env) sessionPage(sub string) (string, string) {
 	e.t.Helper()
 	rel := e.findSession(sub)
 	if rel == "" {
-		e.t.Fatalf("no session page contains %q under %s", sub, filepath.Join(e.home, "projects"))
+		e.t.Fatalf("no session page contains %q under %s", sub, e.home)
 	}
 	return rel, e.read(filepath.Join(e.home, filepath.FromSlash(rel)))
 }
@@ -606,14 +616,14 @@ func TestDoctorReportsVersionAndHealth(t *testing.T) {
 
 	e.agentInit(dir)
 	rows, out := e.doctor(dir)
-	e.match(rows["Memory repository"], `^`+regexp.QuoteMeta(e.home)+` \(branch main, 1 commit\)$`)
+	e.match(rows["Memory repository"], `^`+regexp.QuoteMeta(e.home)+` \(branch t, 1 commit\)$`)
 	e.has(out, "· Remote: none: memory stays on this machine")
 	e.has(out, "✓ Uncommitted changes: none")
-	e.match(rows["Project folder"], `^projects/gm-shop-app-`)
+	e.eq(projectPrefix(rows["Project folder"]), "", "the memories are at the repository's top by default")
 	e.eq(strings.HasPrefix(rows["Global folder"], "global"), true)
 	e.has(out, "✓ Claude Code hooks: 7 events")
 	e.has(out, "✓ Copilot hooks: 6 events")
-	e.has(out, "✓ Slash commands: Claude Code 7/7, Copilot 7/7")
+	e.has(out, "✓ Slash commands: Claude Code 9/9, Copilot 9/9")
 	e.match(out, `✓ Hook launcher: \.git/git-memory/gm`)
 	e.match(out, `✓ Binary used by hooks: .*git-memory`)
 	e.has(out, "· Agent activity: no hook events yet")
@@ -626,7 +636,7 @@ func TestDoctorReportsVersionAndHealth(t *testing.T) {
 	_, out = e.doctor(dir)
 	e.has(out, "✓ Agent activity: last hook event just now")
 	e.has(out, "1 memory and 1 session in this project, 0 global")
-	e.match(out, `✓ Memory repository: .* \(branch main, 2 commits\)`)
+	e.match(out, `✓ Memory repository: .* \(branch t, 2 commits\)`)
 	e.write(filepath.Join(e.home, "scratch.md"), "# draft\n")
 	e.has(e.sh(dir, binPath, "doctor"), "! Uncommitted changes: 1 file")
 	e.write(filepath.Join(dir, ".git/git-memory/errors.log"), "2026-10-25T00:00:00Z Error: boom\n")
@@ -672,14 +682,6 @@ func TestNoEnvironmentVariableChangesWhereTheMemoryLives(t *testing.T) {
 	e.skipOnWindows()
 	e.hook(dir, "claude", "UserPromptSubmit", map[string]any{"session_id": "ev1ev1ev1", "prompt": "remember that nothing but the folder matters"})
 	e.has(e.gm(dir, "ls-files"), "nothing-but-the-folder-matters")
-}
-
-// A project with an origin is named after it, whatever its directory is called.
-func TestProjectIsNamedAfterItsOrigin(t *testing.T) {
-	e := newEnv(t)
-	dir := e.newRepo("whatever")
-	e.git(dir, "remote", "add", "origin", "git@github.com:acme/payments-api.git")
-	e.eq(e.project(dir), "projects/payments-api")
 }
 
 func TestAgentInitKeepsTheUsersOwnHooksAndMigratesOldOnes(t *testing.T) {
@@ -733,7 +735,7 @@ func TestClaudeSessionCaptureCompileRecall(t *testing.T) {
 
 	// the session is a page in the memory repository, committed there, and nowhere near the project
 	page, shown := e.sessionPage("claude-s1aaaaaa")
-	e.ok(strings.HasPrefix(page, proj+"/sessions/"), "session page outside the project's folder: "+page)
+	e.ok(strings.HasPrefix(page, proj+"sessions/"), "session page outside the project's folder: "+page)
 	e.lacks(e.gm(dir, "log", "--format=%s"), "memory: session", "session pages are kept out of git")
 	e.lacks(e.tracked(dir), "claude-s1aaaaaa")
 	e.eq(e.status(dir), "")
@@ -752,7 +754,7 @@ func TestClaudeSessionCaptureCompileRecall(t *testing.T) {
 	e.has(ctxOf(start), "Pinned the retry clock")
 	recall := e.hook(dir, "claude", "UserPromptSubmit", map[string]any{"session_id": "s2bbbbbb", "prompt": "the upload retry test is flaky again, what did we change last time?"})
 	e.has(ctxOf(recall), "Fix the flaky upload retry test")
-	e.has(ctxOf(recall), proj+"/sessions/", "recall cites the page's path in the memory repository")
+	e.has(ctxOf(recall), proj+"sessions/", "recall cites the page's path in the memory repository")
 }
 
 func TestCopilotSessionUsesCamelCasePayloads(t *testing.T) {
@@ -760,7 +762,7 @@ func TestCopilotSessionUsesCamelCasePayloads(t *testing.T) {
 	e.skipOnWindows()
 	dir := e.newProject("copilot")
 	proj := e.project(dir)
-	e.commitPage(dir, proj+"/memories/decision/package-manager.md", "---\nkind: decision\ntier: semantic\ntags: []\n---\n\n# Package manager\n\nWe use pnpm, never npm, in this monorepo.\n")
+	e.commitPage(dir, proj+"memories/decision/package-manager.md", "---\nkind: decision\ntier: semantic\ntags: []\n---\n\n# Package manager\n\nWe use pnpm, never npm, in this monorepo.\n")
 
 	start := e.hook(dir, "copilot", "sessionStart", map[string]any{"sessionId": "c1", "source": "new"})
 	e.has(ctxOf(start), "Package manager")
@@ -819,24 +821,21 @@ func TestBriefingReadsTheProjectAndGlobalFoldersOnly(t *testing.T) {
 	page := func(title, body string) string {
 		return "---\nkind: decision\ntier: semantic\ntags: []\n---\n\n# " + title + "\n\n" + body + "\n"
 	}
-	e.commitPage(a, pa+"/memories/decision/strict-ts.md", page("Strict TS", "Always use strict TypeScript."))
+	e.commitPage(a, pa+"memories/decision/strict-ts.md", page("Strict TS", "Always use strict TypeScript."))
 	e.commitPage(a, "global/memories/decision/pnpm.md", page("Use pnpm", "Never npm."))
 
 	bf := ctxOf(e.hook(a, "claude", "SessionStart", map[string]any{"session_id": "ba1ba1ba1"}))
-	e.has(bf, "- Strict TS — Always use strict TypeScript. ("+pa+"/memories/decision/strict-ts.md)")
+	e.has(bf, "- Strict TS — Always use strict TypeScript. ("+pa+"memories/decision/strict-ts.md)")
 	e.has(bf, "- Use pnpm {global} — Never npm. (global/memories/decision/pnpm.md)")
 	e.has(bf, "git run inside it", "the briefing tells the agent what the CLI is")
 	e.has(bf, "./.git/git-memory/gm grep")
 
-	// a memory repository that holds other projects too (a cloned team repository): their pages are not this project's
-	e.commitPage(a, "projects/someone-elses-app/memories/decision/theirs.md", page("Their rule", "Belongs to another project."))
 	again := ctxOf(e.hook(a, "claude", "SessionStart", map[string]any{"session_id": "bb1bb1bb1"}))
-	e.has(again, "Use pnpm {global}", "global applies to every project")
-	e.lacks(again, "Their rule", "another project's memories")
+	e.has(again, "Use pnpm {global}", "global is read with the project's own")
 
 	// moving a page between the folders is a plain git mv
-	e.gm(a, "mv", pa+"/memories/decision/strict-ts.md", "global/memories/decision/strict-ts.md")
-	e.gm(a, "commit", "-q", "-m", "promote", "--", pa+"/memories", "global/memories")
+	e.gm(a, "mv", pa+"memories/decision/strict-ts.md", "global/memories/decision/strict-ts.md")
+	e.gm(a, "commit", "-q", "-m", "promote", "--", pa+"memories", "global/memories")
 	e.has(ctxOf(e.hook(a, "claude", "SessionStart", map[string]any{"session_id": "bb2bb2bb2"})), "Strict TS {global}")
 }
 
@@ -848,12 +847,12 @@ func TestPinnedPagesComeFirstAndSupersededOnesLeave(t *testing.T) {
 	page := func(front, title, body string) string {
 		return "---\nkind: decision\n" + front + "tags: []\n---\n\n# " + title + "\n\n" + body + "\n"
 	}
-	e.commitPage(dir, proj+"/core/no-secrets.md", page("tier: core\n", "No secrets", "Never commit secrets or .env files."))
-	e.commitPage(dir, proj+"/memories/decision/oldest.md", page("", "Oldest decision", "The oldest decision, made first."))
+	e.commitPage(dir, proj+"core/no-secrets.md", page("tier: core\n", "No secrets", "Never commit secrets or .env files."))
+	e.commitPage(dir, proj+"memories/decision/oldest.md", page("", "Oldest decision", "The oldest decision, made first."))
 	for i := 1; i <= 12; i++ {
-		e.commitPage(dir, fmt.Sprintf("%s/memories/decision/d%d.md", proj, i), page("", fmt.Sprintf("Decision %d", i), fmt.Sprintf("Decision number %d body.", i)))
+		e.commitPage(dir, fmt.Sprintf("%smemories/decision/d%d.md", proj, i), page("", fmt.Sprintf("Decision %d", i), fmt.Sprintf("Decision number %d body.", i)))
 	}
-	e.commitPage(dir, proj+"/memories/decision/rest.md", page("", "Use REST", "Public APIs are REST."))
+	e.commitPage(dir, proj+"memories/decision/rest.md", page("", "Use REST", "Public APIs are REST."))
 
 	b := ctxOf(e.hook(dir, "claude", "SessionStart", map[string]any{"session_id": "dc1dc1dc1"}))
 	core, decisions := strings.Index(b, "## Core notes"), strings.Index(b, "## Decisions in force")
@@ -867,12 +866,12 @@ func TestPinnedPagesComeFirstAndSupersededOnesLeave(t *testing.T) {
 	e.has(b, "- Use REST")
 
 	// retiring a decision is an edit of its frontmatter, committed like any other change
-	e.commitPage(dir, proj+"/memories/decision/rest.md", page("status: superseded\n", "Use REST", "> Superseded: clients need flexible queries\n\nPublic APIs are REST."))
+	e.commitPage(dir, proj+"memories/decision/rest.md", page("status: superseded\n", "Use REST", "> Superseded: clients need flexible queries\n\nPublic APIs are REST."))
 	b = ctxOf(e.hook(dir, "claude", "SessionStart", map[string]any{"session_id": "dc2dc2dc2"}))
 	e.lacks(b, "Use REST", "a superseded decision must leave the briefing")
 	recall := e.hook(dir, "claude", "UserPromptSubmit", map[string]any{"session_id": "dc2dc2dc2", "prompt": "should the public api be rest or graphql for the new endpoint?"})
 	e.lacks(ctxOf(recall), "Use REST", "recall must not surface superseded pages")
-	e.has(e.gm(dir, "show", "HEAD:"+proj+"/memories/decision/rest.md"), "Public APIs are REST", "but it is kept")
+	e.has(e.gm(dir, "show", "HEAD:"+proj+"memories/decision/rest.md"), "Public APIs are REST", "but it is kept")
 }
 
 // ---- remembering from the prompt --------------------------------------------------------------------------------
@@ -901,7 +900,7 @@ func TestPromptTriggersAreSavedAndCommitted(t *testing.T) {
 	}, "\n"), "claude")
 	e.eq(echo, map[string]any(nil), "a prompt must not be answered with the memories it has just saved")
 
-	files := strings.Fields(e.gm(dir, "ls-files", "--", proj+"/memories"))
+	files := strings.Fields(e.gm(dir, "ls-files", "--", proj+"memories"))
 	e.eq(len(files), 4, "four markers, four pages: "+strings.Join(files, " "))
 	all := ""
 	for _, f := range files {
@@ -969,8 +968,8 @@ func TestHooksOnlyCommitTheirOwnFolder(t *testing.T) {
 // ---- slash commands -----------------------------------------------------------------------------------------------
 
 var (
-	commandNames = []string{"remember", "decide", "recall", "memories", "list", "promote", "forget"}
-	writerNames  = []string{"remember", "decide", "promote", "forget"}
+	commandNames = []string{"memory-remember", "memory-decide", "memory-recall", "memory-status", "memory-list", "memory-promote", "memory-refine", "memory-forget", "memory-sync"}
+	writerNames  = []string{"memory-remember", "memory-decide", "memory-promote", "memory-refine", "memory-forget", "memory-sync"}
 )
 
 // relCLI is how the (committable) command files refer to the CLI.
@@ -994,7 +993,7 @@ func TestAgentInitInstallsSlashCommands(t *testing.T) {
 	e.skipOnWindows()
 	dir := e.newRepo("cmds")
 	out := e.agentInit(dir)
-	e.has(out, "slash commands (Claude Code, Copilot, Codex, Cursor, Gemini CLI; git-excluded): /remember /decide /recall /memories /list /promote /forget")
+	e.has(out, "slash commands (Claude Code, Copilot, Codex, Cursor, Gemini CLI; git-excluded): /memory-remember /memory-decide /memory-recall /memory-status /memory-list /memory-promote /memory-refine /memory-forget /memory-sync")
 	e.eq(e.status(dir), "", "commands must be git-excluded")
 
 	for _, name := range commandNames {
@@ -1024,32 +1023,32 @@ func TestAgentInitInstallsSlashCommands(t *testing.T) {
 		e.has(e.read(filepath.Join(dir, ".claude/skills", name, "SKILL.md")), "install.sh", name+" must explain how to install")
 		e.has(e.read(filepath.Join(dir, ".github/prompts", name+".prompt.md")), "ask whether you should do it for them", name)
 	}
-	e.lacks(e.read(filepath.Join(dir, ".claude/skills/recall/SKILL.md")), "disable-model-invocation")
+	e.lacks(e.read(filepath.Join(dir, ".claude/skills/memory-recall/SKILL.md")), "disable-model-invocation")
 	e.ok(!e.exists(filepath.Join(dir, ".claude/skills/memory")), "must not shadow the built-in /memory")
 
 	exclude := e.read(filepath.Join(dir, ".git/info/exclude"))
-	e.match(exclude, `(?m)^/\.claude/skills/remember/$`)
-	e.match(exclude, `(?m)^/\.github/prompts/remember\.prompt\.md$`)
+	e.match(exclude, `(?m)^/\.claude/skills/memory-remember/$`)
+	e.match(exclude, `(?m)^/\.github/prompts/memory-remember\.prompt\.md$`)
 }
 
 func TestCommandsNeverOverwriteYourOwnFiles(t *testing.T) {
 	e := newEnv(t)
 	dir := e.newRepo("cmds2")
 	own := "---\nname: remember\ndescription: my own\n---\nMine.\n"
-	e.write(filepath.Join(dir, ".claude/skills/remember/SKILL.md"), own)
-	e.write(filepath.Join(dir, ".github/prompts/recall.prompt.md"), "my own recall prompt\n")
+	e.write(filepath.Join(dir, ".claude/skills/memory-remember/SKILL.md"), own)
+	e.write(filepath.Join(dir, ".github/prompts/memory-recall.prompt.md"), "my own recall prompt\n")
 
 	out := e.agentInit(dir)
-	e.has(out, "note: kept your own .claude/skills/remember/SKILL.md")
-	e.has(out, "note: kept your own .github/prompts/recall.prompt.md")
-	e.eq(e.read(filepath.Join(dir, ".claude/skills/remember/SKILL.md")), own)
-	e.eq(e.read(filepath.Join(dir, ".github/prompts/recall.prompt.md")), "my own recall prompt\n")
-	e.has(e.read(filepath.Join(dir, ".claude/skills/decide/SKILL.md")), "git-memory:generated")
+	e.has(out, "note: kept your own .claude/skills/memory-remember/SKILL.md")
+	e.has(out, "note: kept your own .github/prompts/memory-recall.prompt.md")
+	e.eq(e.read(filepath.Join(dir, ".claude/skills/memory-remember/SKILL.md")), own)
+	e.eq(e.read(filepath.Join(dir, ".github/prompts/memory-recall.prompt.md")), "my own recall prompt\n")
+	e.has(e.read(filepath.Join(dir, ".claude/skills/memory-decide/SKILL.md")), "git-memory:generated")
 
 	// re-running init rewrites only the generated files
-	before := e.read(filepath.Join(dir, ".claude/skills/decide/SKILL.md"))
+	before := e.read(filepath.Join(dir, ".claude/skills/memory-decide/SKILL.md"))
 	e.agentInit(dir)
-	e.eq(e.read(filepath.Join(dir, ".claude/skills/decide/SKILL.md")), before)
+	e.eq(e.read(filepath.Join(dir, ".claude/skills/memory-decide/SKILL.md")), before)
 
 	none := e.newRepo("cmds3")
 	e.lacks(e.agentInit(none, "--no-commands"), "slash commands")
@@ -1057,7 +1056,7 @@ func TestCommandsNeverOverwriteYourOwnFiles(t *testing.T) {
 
 	onlyClaude := e.newRepo("cmds4")
 	e.agentInit(onlyClaude, "claude")
-	e.ok(e.exists(filepath.Join(onlyClaude, ".claude/skills/recall/SKILL.md")) && !e.exists(filepath.Join(onlyClaude, ".github/prompts")), "agent init claude wrote Copilot files")
+	e.ok(e.exists(filepath.Join(onlyClaude, ".claude/skills/memory-recall/SKILL.md")) && !e.exists(filepath.Join(onlyClaude, ".github/prompts")), "agent init claude wrote Copilot files")
 }
 
 // init writes each agent's always-loaded instructions: the memory layout and how to read it. Own files are kept.
@@ -1069,7 +1068,7 @@ func TestAgentInitWritesInstructions(t *testing.T) {
 	e.has(out, "wrote .github/instructions/git-memory.instructions.md")
 
 	claude := e.read(filepath.Join(dir, ".claude/rules/git-memory.md"))
-	for _, want := range []string{"git-memory:generated", "projects/gm-instr", "memories/<kind>", "sessions/YYYY/MM", "global/", "./.git/git-memory/gm grep", "show HEAD:<path>"} {
+	for _, want := range []string{"git-memory:generated", "memories/<kind>", "sessions/YYYY/MM", "global/", "./.git/git-memory/gm grep", "show HEAD:<path>"} {
 		e.has(claude, want)
 	}
 	e.ok(!strings.Contains(claude, "{SLUG}") && !strings.Contains(claude, "{GM}") && !strings.Contains(claude, "§"), "placeholders left in the instructions")
@@ -1125,24 +1124,24 @@ func TestEveryCommandLineInTheGeneratedFilesWorks(t *testing.T) {
 			rows[m[1]] = m[2]
 		}
 	}
-	repo, proj := strings.Split(rows["Memory repository"], " (")[0], rows["Project folder"]
+	repo, proj := strings.Split(rows["Memory repository"], " (")[0], projectPrefix(rows["Project folder"])
 	e.eq(repo, e.home)
 
 	// /remember
-	page := proj + "/memories/decision/api-style.md"
+	page := proj + "memories/decision/api-style.md"
 	e.write(filepath.Join(repo, filepath.FromSlash(page)), "---\nkind: decision\ntier: semantic\ntags: []\ncreated: 2026-11-12T10:00:00Z\n---\n\n# API style\n\nPublic APIs are REST for external clients.\n")
-	gm("add", "-A", "--", proj+"/memories")
-	gm("commit", "-q", "-m", "memory: API style", "--", proj+"/memories")
+	gm("add", "-A", "--", proj+"memories")
+	gm("commit", "-q", "-m", "memory: API style", "--", proj+"memories")
 	// /recall
-	e.has(gm("grep", "-n", "-i", "-I", "-e", "rest", "--", proj, "global"), "api-style.md")
+	e.has(gm(append([]string{"grep", "-n", "-i", "-I", "-e", "rest", "--"}, strings.Fields(rows["Read folders"])...)...), "api-style.md")
 	e.has(gm("show", "HEAD:"+page), "REST for external clients")
 	// /memories
 	e.has(gm("log", "--oneline", "-n", "10"), "memory: API style")
-	e.has(gm("ls-files", "--", proj), "api-style.md")
+	e.has(gm("ls-files", "--", proj+"memories"), "api-style.md")
 	// /promote
 	gm("promote", page, "--to", "global")
 	e.has(gm("ls-files", "--", "global"), "global/memories/decision/api-style.md")
-	e.lacks(gm("ls-files", "--", proj), "api-style.md")
+	e.lacks(gm("ls-files", "--", proj+"memories"), "api-style.md")
 	// /forget
 	gm("rm", "-q", "global/memories/decision/api-style.md")
 	gm("commit", "-q", "-m", "memory: forget API style", "--", "global/memories/decision/api-style.md")
@@ -1182,7 +1181,7 @@ func TestCommandFilesAreIdenticalOnEveryMachine(t *testing.T) {
 		}
 		e.ok(!abs.MatchString(text), rel+" holds an absolute path")
 	}
-	for _, rel := range []string{".claude/skills/recall/SKILL.md", ".github/prompts/recall.prompt.md"} {
+	for _, rel := range []string{".claude/skills/memory-recall/SKILL.md", ".github/prompts/memory-recall.prompt.md"} {
 		e.has(fa[rel], relCLI(), rel+" should use the relative launcher")
 		e.has(fa[rel], "does not exist")
 	}
@@ -1278,8 +1277,8 @@ func TestPromoteCopiesAClaudeMemoryIntoTheProjectOrGlobal(t *testing.T) {
 	e.write(filepath.Join(claude, "MEMORY.md"), "- index\n")
 
 	out := e.gm(dir, "promote", "claude:feedback_tailwind.md", "--to", "project")
-	e.eq(strings.TrimSpace(out), "promoted claude:feedback_tailwind.md → "+proj+"/memories/decision/use-tailwind.md")
-	page := e.gm(dir, "show", "HEAD:"+proj+"/memories/decision/use-tailwind.md")
+	e.eq(strings.TrimSpace(out), "promoted claude:feedback_tailwind.md → "+proj+"memories/decision/use-tailwind.md")
+	page := e.gm(dir, "show", "HEAD:"+proj+"memories/decision/use-tailwind.md")
 	e.has(page, "kind: decision", "Claude's feedback is guidance on how to work: a decision here")
 	e.has(page, "tags: [from-claude]")
 	e.has(page, "source: claude:feedback_tailwind.md")
@@ -1321,13 +1320,13 @@ func TestPromoteCopiesCopilotMemoriesAndPlainFiles(t *testing.T) {
 	plain := filepath.Join(e.mkdir("notes"), "retries.md")
 	e.write(plain, "---\nkind: procedure\ntags: [net]\n---\n\n# Retries use backoff\n\nDouble the delay each time.\n")
 
-	e.has(e.gm(dir, "promote", "copilot:build", "--to", "project"), "→ "+proj+"/memories/note/build-with-make.md")
+	e.has(e.gm(dir, "promote", "copilot:build", "--to", "project"), "→ "+proj+"memories/note/build-with-make.md")
 	e.has(e.gm(dir, "promote", "copilot-user:tabs.md", "--to", "global"), "→ global/memories/note/i-prefer-tabs.md")
-	e.has(e.gm(dir, "promote", plain, "--to", "project"), "→ "+proj+"/memories/procedure/retries-use-backoff.md")
-	page := e.gm(dir, "show", "HEAD:"+proj+"/memories/procedure/retries-use-backoff.md")
+	e.has(e.gm(dir, "promote", plain, "--to", "project"), "→ "+proj+"memories/procedure/retries-use-backoff.md")
+	page := e.gm(dir, "show", "HEAD:"+proj+"memories/procedure/retries-use-backoff.md")
 	e.has(page, "tags: [net, from-file]")
 	e.has(page, "source: file:retries.md")
-	e.has(e.gm(dir, "show", "HEAD:"+proj+"/memories/note/build-with-make.md"), "tags: [from-copilot]")
+	e.has(e.gm(dir, "show", "HEAD:"+proj+"memories/note/build-with-make.md"), "tags: [from-copilot]")
 	e.has(e.gm(dir, "show", "HEAD:global/memories/note/i-prefer-tabs.md"), "tags: [from-copilot-user]")
 
 	// several at once: each is reported, a failure does not stop the others, and the exit code says so
@@ -1344,18 +1343,18 @@ func TestPromoteMovesPagesBetweenTheProjectAndGlobal(t *testing.T) {
 	dir := e.newProject("move")
 	proj := e.project(dir)
 	page := "---\nkind: decision\ntier: semantic\ntags: []\n---\n\n# Public APIs are REST\n\nExternal clients.\n"
-	e.commitPage(dir, proj+"/memories/decision/use-rest.md", page)
+	e.commitPage(dir, proj+"memories/decision/use-rest.md", page)
 
-	out := e.gm(dir, "promote", proj+"/memories/decision/use-rest.md", "--to", "global")
-	e.has(out, "promoted "+proj+"/memories/decision/use-rest.md → global/memories/decision/use-rest.md")
+	out := e.gm(dir, "promote", proj+"memories/decision/use-rest.md", "--to", "global")
+	e.has(out, "promoted "+proj+"memories/decision/use-rest.md → global/memories/decision/use-rest.md")
 	e.has(e.tracked(dir), "global/memories/decision/use-rest.md")
-	e.lacks(e.tracked(dir), proj+"/memories/decision/use-rest.md")
+	e.lacks("\n"+e.tracked(dir), "\n"+proj+"memories/decision/use-rest.md")
 	e.has(e.gm(dir, "log", "--format=%s", "-n", "1"), "memory: promote Public APIs are REST to global")
 	e.has(e.gm(dir, "log", "-n", "1", "--name-status", "--format="), "R", "recorded as a rename, so history follows the page")
 	e.eq(strings.TrimSpace(e.gm(dir, "status", "--porcelain")), "")
 
 	// the other way, by a part of the name; the same folder is refused
-	e.has(e.gm(dir, "promote", "use-rest", "--to", "project"), "→ "+proj+"/memories/decision/use-rest.md")
+	e.has(e.gm(dir, "promote", "use-rest", "--to", "project"), "→ "+proj+"memories/decision/use-rest.md")
 	_, errOut, code := e.gmRaw(dir, "promote", "use-rest", "--to", "project")
 	e.eq(code, 1)
 	e.has(errOut, "is already in "+proj)
@@ -1368,7 +1367,7 @@ func TestPromoteMovesPagesBetweenTheProjectAndGlobal(t *testing.T) {
 	_, errOut, code = e.gmRaw(dir, "promote", "draft", "--to", "global")
 	e.eq(code, 1)
 	e.has(errOut, "matches more than one page", "a bare name that matches two pages is not guessed")
-	_, errOut, code = e.gmRaw(dir, "promote", proj+"/memories/note/draft.md", "--to", "global")
+	_, errOut, code = e.gmRaw(dir, "promote", proj+"memories/note/draft.md", "--to", "global")
 	e.eq(code, 1)
 	e.has(errOut, "global/memories/note/draft.md already exists")
 }
@@ -1379,7 +1378,7 @@ func TestPromoteExplainsItselfWhenUsedWrong(t *testing.T) {
 	for _, args := range [][]string{{"promote"}, {"promote", "x.md"}, {"promote", "x.md", "--to", "nowhere"}, {"promote", "--to", "global"}} {
 		_, errOut, code := e.gmRaw(dir, args...)
 		e.eq(code, 1, strings.Join(args, " "))
-		e.has(errOut, "usage: git-memory promote <source>... --to project|global")
+		e.has(errOut, "usage: git-memory promote <source>... --to project|scope|global")
 	}
 	// it needs a project: that is where "project" is and where Claude's memory for it is found
 	_, errOut, code := e.gmRaw(e.mkdir("not-a-project"), "promote", "x.md", "--to", "global")
@@ -1396,8 +1395,8 @@ func TestDemoteNarrowsAGlobalPageToTheProject(t *testing.T) {
 	e.commitPage(dir, "global/memories/decision/use-rest.md", page)
 
 	out := e.gm(dir, "demote", "use-rest")
-	e.has(out, "demoted global/memories/decision/use-rest.md → "+proj+"/memories/decision/use-rest.md")
-	e.has(e.tracked(dir), proj+"/memories/decision/use-rest.md")
+	e.has(out, "demoted global/memories/decision/use-rest.md → "+proj+"memories/decision/use-rest.md")
+	e.has(e.tracked(dir), proj+"memories/decision/use-rest.md")
 	e.lacks(e.tracked(dir), "global/memories/decision/use-rest.md")
 	e.has(e.gm(dir, "log", "--format=%s", "-n", "1"), "memory: demote Public APIs are REST to project")
 	e.has(e.gm(dir, "log", "-n", "1", "--name-status", "--format="), "R", "recorded as a rename")
@@ -1405,32 +1404,26 @@ func TestDemoteNarrowsAGlobalPageToTheProject(t *testing.T) {
 
 	// it is the inverse of promote: the page lands where it started
 	e.has(e.gm(dir, "promote", "use-rest", "--to", "global"), "→ global/memories/decision/use-rest.md")
-	e.has(e.gm(dir, "demote", "global/memories/decision/use-rest.md"), "→ "+proj+"/memories/decision/use-rest.md")
+	e.has(e.gm(dir, "demote", "global/memories/decision/use-rest.md"), "→ "+proj+"memories/decision/use-rest.md")
 
 	// nothing is narrower than a project
-	_, errOut, code := e.gmRaw(dir, "demote", proj+"/memories/decision/use-rest.md")
+	_, errOut, code := e.gmRaw(dir, "demote", proj+"memories/decision/use-rest.md")
 	e.eq(code, 1)
-	e.has(errOut, "is already in this project's folder: nothing is narrower than a project")
-
-	// another project's page is not ours to narrow
-	e.commitPage(dir, "projects/other-app/memories/note/theirs.md", "# Theirs\n\nx\n")
-	_, errOut, code = e.gmRaw(dir, "demote", "theirs")
-	e.eq(code, 1)
-	e.has(errOut, "belongs to projects/other-app: demote narrows global pages")
+	e.has(errOut, "is already in this project's own memories: nothing is narrower than a project")
 
 	// a page that was never committed moves too; when the same name exists in both folders the global one is the target
 	e.write(filepath.Join(e.home, "global/memories/note/draft.md"), "# Draft\n\nnot committed\n")
-	e.has(e.gm(dir, "demote", "draft"), "→ "+proj+"/memories/note/draft.md")
+	e.has(e.gm(dir, "demote", "draft"), "→ "+proj+"memories/note/draft.md")
 	e.commitPage(dir, "global/memories/note/draft.md", "# Draft v2\n")
 	_, errOut, code = e.gmRaw(dir, "demote", "draft")
 	e.eq(code, 1)
-	e.has(errOut, proj+"/memories/note/draft.md already exists", "the global page is picked, and it does not overwrite")
+	e.has(errOut, proj+"memories/note/draft.md already exists", "the global page is picked, and it does not overwrite")
 
 	// several at once: failures are reported, the rest still move
 	e.commitPage(dir, "global/memories/fact/a.md", "# A\n\na\n")
 	stdout, errOut, code := e.gmRaw(dir, "demote", "global/memories/fact/a.md", "no-such-page")
 	e.eq(code, 1)
-	e.has(stdout, "→ "+proj+"/memories/fact/a.md")
+	e.has(stdout, "→ "+proj+"memories/fact/a.md")
 	e.has(errOut, "no page in the memory repository matches")
 }
 
@@ -1466,13 +1459,13 @@ func TestMovingAStagedButUncommittedPage(t *testing.T) {
 
 	e.write(filepath.Join(e.home, "global/memories/note/staged.md"), "# Staged\n\nadded, not committed\n")
 	e.gm(dir, "add", "global")
-	e.has(e.gm(dir, "demote", "staged"), "→ "+proj+"/memories/note/staged.md")
+	e.has(e.gm(dir, "demote", "staged"), "→ "+proj+"memories/note/staged.md")
 	e.eq(strings.TrimSpace(e.gm(dir, "status", "--porcelain")), "", "no half-staged leftovers")
-	e.has(e.tracked(dir), proj+"/memories/note/staged.md")
+	e.has(e.tracked(dir), proj+"memories/note/staged.md")
 	e.lacks(e.tracked(dir), "global/memories/note/staged.md")
 
 	e.write(filepath.Join(e.home, proj, "memories/note/staged2.md"), "# Staged two\n\nadded, not committed\n")
-	e.gm(dir, "add", proj)
+	e.gm(dir, "add", "--", proj+"memories")
 	e.has(e.gm(dir, "promote", "staged2", "--to", "global"), "→ global/memories/note/staged2.md")
 	e.eq(strings.TrimSpace(e.gm(dir, "status", "--porcelain")), "")
 }
@@ -1532,9 +1525,9 @@ func TestListShowsEveryMemoryGroupedByWhereItLives(t *testing.T) {
 	proj := e.project(dir)
 
 	// in the memory repository: this project's (one committed, one not yet, one retired), a global one, and a session page
-	e.commitPage(dir, proj+"/memories/decision/use-rest.md", "---\nkind: decision\ntier: semantic\n---\n\n# Public APIs are REST\n\nBecause clients.\n")
+	e.commitPage(dir, proj+"memories/decision/use-rest.md", "---\nkind: decision\ntier: semantic\n---\n\n# Public APIs are REST\n\nBecause clients.\n")
 	e.write(filepath.Join(e.home, proj, "memories/fact/port.md"), "---\nkind: fact\n---\n\n# The API listens on 8080\n\nx\n")
-	e.commitPage(dir, proj+"/memories/note/old.md", "---\nkind: note\nstatus: superseded\n---\n\n# An old note\n\nx\n")
+	e.commitPage(dir, proj+"memories/note/old.md", "---\nkind: note\nstatus: superseded\n---\n\n# An old note\n\nx\n")
 	e.commitPage(dir, "global/core/pnpm.md", "---\nkind: decision\ntier: core\n---\n\n# Use pnpm\n\nNever npm.\n")
 	e.write(filepath.Join(e.home, proj, "sessions/2026/11/2026-11-12-claude-ab12cd34.md"), "---\nkind: session\n---\n\n# A session\n\nx\n")
 	// and in the agents' own folders
@@ -1545,9 +1538,13 @@ func TestListShowsEveryMemoryGroupedByWhereItLives(t *testing.T) {
 	e.write(filepath.Join(user, "tabs.md"), "# I prefer tabs\n\nAlways tabs.\n")
 
 	out := e.gm(dir, "list")
-	e.has(out, ".git-memory · this project ("+proj+") · 3 memories")
-	e.match(out, `(?m)^  decision  Public APIs are REST +`+regexp.QuoteMeta(proj)+`/memories/decision/use-rest\.md$`)
-	e.has(out, proj+"/memories/fact/port.md", "a memory that is not committed yet is listed")
+	heading := ".git-memory · this project"
+	if proj != "" {
+		heading += " (" + strings.TrimSuffix(proj, "/") + ")"
+	}
+	e.has(out, heading+" · 3 memories")
+	e.match(out, `(?m)^  decision  Public APIs are REST +`+regexp.QuoteMeta(proj)+`memories/decision/use-rest\.md$`)
+	e.has(out, proj+"memories/fact/port.md", "a memory that is not committed yet is listed")
 	e.match(out, `(?m)memories/note/old\.md +— superseded$`)
 	e.lacks(out, "A session", "session pages are not memories")
 	e.has(out, ".git-memory · global · 1 memory")
@@ -1570,8 +1567,8 @@ func TestListShowsEveryMemoryGroupedByWhereItLives(t *testing.T) {
 	e.write(filepath.Join(e.home, proj, "sessions/2026/11/2026-11-13-copilot-ee55ff66.md"), "---\nkind: session\nagent: copilot\n---\n\n# Later session\n\nx\n")
 	e.write(filepath.Join(e.home, proj, "sessions/2025/12/2025-12-31-claude-00aa11bb.md"), "---\nkind: session\nagent: claude\n---\n\n# Last year\n\nx\n")
 	all := e.gm(dir, "list", "sessions")
-	e.has(all, ".git-memory · sessions ("+proj+"/sessions) · 3 sessions")
-	e.match(all, `(?m)^  session  Later session +`+regexp.QuoteMeta(proj)+`/sessions/2026/11/2026-11-13-copilot-ee55ff66\.md +— 2026-11-13 · copilot$`)
+	e.has(all, ".git-memory · sessions ("+proj+"sessions) · 3 sessions")
+	e.match(all, `(?m)^  session  Later session +`+regexp.QuoteMeta(proj)+`sessions/2026/11/2026-11-13-copilot-ee55ff66\.md +— 2026-11-13 · copilot$`)
 	e.ok(strings.Index(all, "Later session") < strings.Index(all, "A session") && strings.Index(all, "A session") < strings.Index(all, "Last year"), "newest first:\n"+all)
 	e.lacks(all, "Use pnpm", "sessions on their own list nothing else")
 	e.lacks(all, "claude:")
@@ -1587,7 +1584,7 @@ func TestListShowsEveryMemoryGroupedByWhereItLives(t *testing.T) {
 	e.lacks(e.gm(dir, "list"), "Later session")
 
 	// every row's name is one promote takes
-	e.has(e.gm(dir, "promote", "claude:feedback_tailwind.md", "--to", "project"), "→ "+proj+"/memories/decision/use-tailwind.md")
+	e.has(e.gm(dir, "promote", "claude:feedback_tailwind.md", "--to", "project"), "→ "+proj+"memories/decision/use-tailwind.md")
 
 	// it only reads
 	e.eq(e.status(dir), "")
@@ -1609,7 +1606,7 @@ func TestListShowsEveryMemoryGroupedByWhereItLives(t *testing.T) {
 func TestSessionPagesAreIgnoredByGit(t *testing.T) {
 	e := newEnv(t)
 	e.skipOnWindows()
-	const rule = "projects/*/sessions/"
+	const rule = "/sessions/"
 
 	// the user already has a .gitignore in the memory repository: it is kept, and the rule is added to it
 	dir := e.newRepoNoMemory("ignored")
@@ -1658,8 +1655,8 @@ func TestSessionPagesAreIgnoredByGit(t *testing.T) {
 func TestAgentInitWiresTheAgentsYouName(t *testing.T) {
 	e := newEnv(t)
 	e.skipOnWindows()
-	claudeFiles := []string{".claude/settings.local.json", ".claude/skills/recall/SKILL.md", ".claude/rules/git-memory.md"}
-	copilotFiles := []string{".github/hooks/git-memory.json", ".github/prompts/recall.prompt.md", ".github/instructions/git-memory.instructions.md"}
+	claudeFiles := []string{".claude/settings.local.json", ".claude/skills/memory-recall/SKILL.md", ".claude/rules/git-memory.md"}
+	copilotFiles := []string{".github/hooks/git-memory.json", ".github/prompts/memory-recall.prompt.md", ".github/instructions/git-memory.instructions.md"}
 	has := func(dir string, files []string) bool {
 		for _, f := range files {
 			if !e.exists(filepath.Join(dir, f)) {
@@ -1690,7 +1687,7 @@ func TestAgentInitWiresTheAgentsYouName(t *testing.T) {
 	_, doc := e.doctor(dir)
 	e.has(doc, "✓ Copilot hooks: 6 events")
 	e.has(doc, "· Claude Code hooks: not set up (git-memory agent init claude)")
-	e.has(doc, "✓ Slash commands: Claude Code 0/7, Copilot 7/7")
+	e.has(doc, "✓ Slash commands: Claude Code 0/9, Copilot 9/9")
 
 	// adding the other one later keeps the first
 	e.gm(dir, "agent", "init", "claude")

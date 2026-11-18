@@ -69,19 +69,41 @@ That is the whole setup, and **it adds nothing to your project's tracked files**
 
 ## The memory repository
 
-A plain git repository, and its location is not configurable: it is the `.git-memory` folder in the folder you are in. **git-memory never searches for it**, up the tree or anywhere else: be in the folder that has it (for a project, its root) and every command runs git there. Nothing creates it by accident: `git-memory init` makes one here, `git-memory clone <url>` clones one here, and `git-memory agent init` makes the project's own; any other command in a folder without one says so and does nothing. The agent hooks use the `.git-memory` of the project's root.
+A plain git repository, and its location is not configurable: it is the `.git-memory` folder in the folder you are in (what is configurable is the folder *inside* it that holds the memories, below). **git-memory never searches for it**, up the tree or anywhere else: be in the folder that has it (for a project, its root) and every command runs git there. Nothing creates it by accident: `git-memory init` makes one here, `git-memory clone <url>` clones one here, and `git-memory agent init` makes the project's own; any other command in a folder without one says so and does nothing. The agent hooks use the `.git-memory` of the project's root.
 
 ```
 .git-memory/
-  projects/<project>/
-    sessions/2026/11/2026-11-12-claude-ab12cd34.md     one page per agent session (written by the hooks; local, kept out of git)
-    memories/<kind>/<title>.md                         decisions, procedures, facts, notes
-    core/<title>.md                                    pinned: opens every briefing for the project
+  sessions/2026/11/2026-11-12-claude-ab12cd34.md     one page per agent session (written by the hooks; local, kept out of git)
+  memories/<kind>/<title>.md                         decisions, procedures, facts, notes
+  core/<title>.md                                    pinned: opens every briefing
+  scopes/<scope>/{memories,core}/                    the same, for one part of the project (a module)
   global/
-    memories/<kind>/<title>.md                         applies to every project
+    memories/<kind>/<title>.md                       read in every scope, apart from the project's own
 ```
 
-`<project>` is the project's `origin` remote name, else its directory name (`git-memory doctor` shows it). Pages are markdown with a small frontmatter, so you can browse, edit and review them anywhere git repositories go:
+**The memory root folder.** The layout above starts at the repository's top by default. A repository that keeps its memories in a folder of it (a team repository with other things in it, say) names that folder in a small file at the top of the *project*, `.git-memory.json` (next to the `.git-memory` folder, not inside it), which you commit with the project like any other file, so everyone who clones the project gets the same layout and nobody configures anything:
+
+```json
+{ "root": "docs/memory" }
+```
+
+```bash
+git-memory agent init claude --root docs/memory    # writes .git-memory.json in the project, then wires it; or edit the file; commit it with the project
+```
+
+With it, the layout above starts in `docs/memory/` (`docs/memory/memories/`, `docs/memory/global/`…); there is no `projects/<name>` level, because one memory repository holds one project, and a repository that holds several gives each its own root folder (and scopes for its modules): pages, briefings, the `.gitignore` for sessions, `list`, `promote`, `doctor` and the paths the agents are taught all follow. No file, no `root`, `"."` or `""` all mean the repository's top. The value must be a folder inside the repository (no `..`, no absolute path). Page paths, in briefings and everywhere else, are the usual git ones and include the folder (`docs/memory/memories/...`).
+
+The same file can turn on `"autoCommit": true`: the hooks then commit every change under the memory root folder, not only the pages they write (hand edits, `global/`), when a session starts, a turn ends or a session ends.
+
+**Scopes.** A project's memories can also be split into scopes, such as a module of an app: `scopes/checkout/memories/...`. Everything is in the repository, but each checkout chooses, locally, the one it works in, and reads only that scope, the project's own memories and the global ones:
+
+```bash
+git-memory agent scope checkout                   # local to this checkout, never committed; --clear reads every scope again (also: agent init <agent> --scope checkout)
+```
+
+Staying in the scope is the rule; reading beyond it is something you ask for, in the prompt (`across all scopes`, `ignore the scope`, or another scope's name: `in the search scope`), and only for that prompt.
+
+Pages are markdown with a small frontmatter, so you can browse, edit and review them anywhere git repositories go:
 
 ```markdown
 ---
@@ -101,14 +123,14 @@ Curating is git:
 | You want to | Do |
 | --- | --- |
 | Find something | `git-memory grep -n -i "retry"` |
-| Read a page | `git-memory show HEAD:projects/shop/memories/decision/rest.md` |
+| Read a page | `git-memory show HEAD:memories/decision/rest.md` |
 | Share a memory with all your projects | `git-memory promote rest --to global` (moves the page and commits) |
 | Narrow a global memory to one project | `git-memory demote rest` (the opposite of the line above) |
 | Bring in what Claude Code or Copilot remember | `git-memory doctor` lists them; `git-memory promote claude:<file> --to project` copies one in |
 | Retire a decision that changed | add `status: superseded` to its frontmatter and commit: it stays in git but leaves briefings and recall |
 | Forget a mistake | `git-memory rm <page>` and commit; history keeps it |
-| Sync between machines | `git-memory remote add origin <url>`, then `git-memory push` / `git-memory pull` |
-| Share with a team | clone the same remote on every machine (`git-memory clone <url>`); each project has its own folder |
+| Sync between machines | `git-memory remote add origin <url>`, then `git-memory sync` |
+| Share with a team | clone the same remote on every machine (`git-memory clone <url>`); everyone commits to a branch named after their git user name, and `git-memory sync` merges the team's work into it and pushes it to `main` (`/memory-sync` settles conflicts) |
 
 ## What the hooks do
 
@@ -116,7 +138,7 @@ Curating is git:
  agent hooks ──► spool (.git/git-memory/spool/*.jsonl, in the project's .git)    cheap append, ~13 ms per hook
                     │  Stop / PreCompact / SessionEnd
                     ▼
-        session page  projects/<project>/sessions/YYYY/MM/<date>-<agent>-<id>.md   a local file: the memory repository's .gitignore keeps it out of git
+        session page  sessions/YYYY/MM/<date>-<agent>-<id>.md   a local file: the memory repository's .gitignore keeps it out of git
                     │
    SessionStart ◄───┴── briefing: pinned notes + every decision + recent memories and sessions (≤ 6 KB)
    UserPromptSubmit ◄── recall: BM25 hits for this prompt          (Claude Code only, see below)
@@ -134,7 +156,7 @@ Curating is git:
   ```
 
   (`remember to run the tests` is an instruction for the current task, not a memory.)
-- **Sessions stay local.** The memory repository's `.gitignore` (`projects/*/sessions/`, added by `git-memory init` and `agent init`, and restored by the hooks if it goes missing) keeps session pages out of git, so they are never committed, pushed or shared. The briefing, `git-memory list sessions` and `doctor` read them from disk. Because git does not search ignored files, `git-memory grep` does not find them: use `list sessions`. A repository that already tracks session pages keeps tracking them until you `git-memory rm -r --cached projects/<project>/sessions`.
+- **Sessions stay local.** The memory repository's `.gitignore` (`/sessions/`, added by `git-memory init` and `agent init`, and restored by the hooks if it goes missing) keeps session pages out of git, so they are never committed, pushed or shared. The briefing, `git-memory list sessions` and `doctor` read them from disk. Because git does not search ignored files, `git-memory grep` does not find them: use `list sessions`. A repository that already tracks session pages keeps tracking them until you `git-memory rm -r --cached sessions`.
 - **Commits are scoped.** A hook commits only its own folder, so whatever else you have staged in the memory repository stays staged.
 - **Fail-open.** A hook error is logged to the project's `.git/git-memory/errors.log` and the hook exits 0; it never blocks the agent.
 
@@ -144,15 +166,17 @@ Curating is git:
 
 | Command | What it does |
 | --- | --- |
-| `/remember <text>` | writes a page for the project (or for every project) and commits it |
-| `/decide` | reviews the conversation, proposes the decisions, procedures and facts worth keeping, and saves the ones you approve |
-| `/recall <topic>` | `git grep`s the memory and answers from it, citing pages by path |
-| `/memories` | where the memory is, what changed recently, anything uncommitted |
-| `/list [scope]` | lists the memories of a scope (`claude`, `copilot`, `personal` for the global ones, `project`, or any folder of the memory repository), or the project's `sessions` (optionally of one date), and says what each one is for |
-| `/promote` | promotes a memory to this project or to every project (also the agents' own memories) |
-| `/forget` | retires a decision (`status: superseded`) or deletes a page |
+| `/memory-remember <text>` | writes a page for the project (or for every project) and commits it |
+| `/memory-decide` | reviews the conversation, proposes the decisions, procedures and facts worth keeping, and saves the ones you approve |
+| `/memory-recall <topic>` | `git grep`s the memory and answers from it, citing pages by path |
+| `/memory-status` | where the memory is, what changed recently, anything uncommitted |
+| `/memory-list [scope]` | lists the memories of a scope (`claude`, `copilot`, `personal` for the global ones, `project`, or any folder of the memory repository), or the project's `sessions` (optionally of one date), and says what each one is for |
+| `/memory-promote` | promotes a memory to this project or to every project (also the agents' own memories) |
+| `/memory-refine` | rewrites one memory to be clearer, self-contained or current, keeping its meaning, and commits it after you approve the diff |
+| `/memory-forget` | retires a decision (`status: superseded`) or deletes a page |
+| `/memory-sync` | merges the team's memory into your branch, settles page conflicts (asking only when in doubt) and pushes |
 
-Commands that write are user-only (the model never invokes them on its own). The files are the same on every machine: they call the CLI as `./.git/git-memory/gm` (relative to the repository root) and contain no home directory or memory location. To share them with the team, `git add -f .claude/skills .github/prompts`: a teammate's `agent init` regenerates byte-identical files, so nothing shows up as modified. A file of yours with the same name is never overwritten.
+The text of every command is a markdown file in [`skills/`](skills) (one file per command, plus the notes they share), embedded in the binary: edit a file and rebuild to change a command. Commands that write are user-only (the model never invokes them on its own). The files are the same on every machine: they call the CLI as `./.git/git-memory/gm` (relative to the repository root) and contain no home directory or memory location. To share them with the team, `git add -f .claude/skills .github/prompts`: a teammate's `agent init` regenerates byte-identical files, so nothing shows up as modified. A file of yours with the same name is never overwritten.
 
 If `./.git/git-memory/gm` is missing (a fresh clone, a new machine), every command tells the agent to say what is missing, show how to install it (`install.sh` / `install.ps1`, then `git-memory agent init`) and ask before running anything. The commands use no `!` shell injection on purpose: Claude Code aborts the whole skill when an injected command fails, which is what happened on a repository with no commits yet.
 

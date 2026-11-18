@@ -15,9 +15,9 @@ type RememberInput struct {
 	Extra [][2]string
 }
 
-// remember stores (or updates) a durable memory page in the project's folder of the memory repository and commits it.
+// remember stores (or updates) a durable memory page in the memory root folder (or its active scope's) of the memory repository and commits it.
 // It returns the page's path in the repository.
-func (p *Project) Remember(in RememberInput) string { return p.RememberIn(p.DirRel(), in) }
+func (p *Project) Remember(in RememberInput) string { return p.RememberIn(p.WriteRel(), in) }
 
 // rememberIn is remember for any folder of the memory repository (the project's, or global).
 func (p *Project) RememberIn(folder string, in RememberInput) string {
@@ -44,7 +44,7 @@ func (p *Project) RememberIn(folder string, in RememberInput) string {
 		dir = "core"
 	}
 	rel := dir + "/" + Slugify(heading, 60) + ".md"
-	repoPath := folder + "/" + rel
+	repoPath := InRoot(folder, rel)
 	RequireMemoryRepo(p.Mem)
 	WithLock(p.Mem, func() {
 		dest := filepath.Join(p.Mem, filepath.FromSlash(folder), filepath.FromSlash(rel))
@@ -66,7 +66,7 @@ func (p *Project) RememberIn(folder string, in RememberInput) string {
 		meta.Set("created", created).Set("updated", now)
 		MkdirAll(filepath.Dir(dest))
 		WriteFile(dest, SerializePage(meta, "# "+heading+"\n\n"+body))
-		CommitPaths(p.Mem, "memory: remember "+OneLine(heading, 60), folder)
+		CommitPaths(p.Mem, "memory: remember "+OneLine(heading, 60), repoPath)
 	})
 	return repoPath
 }
